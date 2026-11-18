@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 SCREEN_W, SCREEN_H = 1920, 1080
 MIN_SCOPIA = 600
 MIN_CAM_H = 400
+MIN_SLOT = 100   # dimensione minima di uno slot spostando i divisori a mano
 
 KIND_CAMERA = "camera"
 KIND_SCOPIA = "scopia"
@@ -161,6 +162,16 @@ class ViewItem:
 class View:
     name: str = ""
     items: List[ViewItem] = field(default_factory=list)
+    col_width: int = 0          # larghezza colonna sinistra impostata a mano (0 = automatica)
+    heights: List[int] = field(default_factory=list)  # altezze in colonna a mano ([] = automatiche)
+
+    @property
+    def is_manual(self) -> bool:
+        return bool(self.col_width or self.heights)
+
+    def reset_geometry(self) -> None:
+        self.col_width = 0
+        self.heights = []
 
 
 @dataclass
@@ -180,7 +191,8 @@ class Project:
         d = json.loads(text)
         p = Project(**{k: v for k, v in d.items() if k not in ("areas", "views")})
         p.areas = [Area(**a) for a in d.get("areas", [])]
-        p.views = [View(v.get("name", ""), [ViewItem(**i) for i in v.get("items", [])])
+        p.views = [View(v.get("name", ""), [ViewItem(**i) for i in v.get("items", [])],
+                        v.get("col_width", 0), v.get("heights", []))
                    for v in d.get("views", [])]
         return p
 
@@ -205,6 +217,7 @@ class ViewResult:
     slots: List[Tuple[int, int, int, int]]      # in ordine di slot (1..n)
     placements: List[Placement]                 # in ordine di slot
     warnings: List[str] = field(default_factory=list)
+    info: List[str] = field(default_factory=list)   # note solo per l'anteprima (deformazioni)
 
 
 def resolve_item(project: Project, lib: List[Device], item: ViewItem):
@@ -303,6 +316,9 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
     if col_has_scopia and L < MIN_SCOPIA:
         L = MIN_SCOPIA
     L = max(200, min(L, SCREEN_W - 400))
+    manual_w = bool(view.col_width)
+    if manual_w:
+        L = max(MIN_SLOT, min(ev(view.col_width), SCREEN_W - MIN_SLOT))
 
     ncam = sum(1 for _, _, p in col if p.is_camera)
     avail = SCREEN_H - MIN_CAM_H * ncam if ncam else SCREEN_H
@@ -313,8 +329,8 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
     hs = fixed_heights(L)
     tot = sum(h for h in hs if h is not None)
     if ncam and tot > avail:
-        if r_prof.kind == KIND_SCOPIA or r_prof.is_camera:
-            # scopia grande a destra: si mantiene la colonna, si comprimono i dispositivi
+        if r_prof.kind == KIND_SCOPIA or r_prof.is_camera or manual_w:
+            # scopia grande a destra (o colonna fissata a mano): si mantiene la colonna, si comprimono i dispositivi
             k = avail / tot
             hs = [None if h is None else h * k for h in hs]
             warnings.append("Dispositivo in colonna compresso in altezza per lasciare "
@@ -359,8 +375,18 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
         else:
             heights[-1] += gap
 
+    if view.heights and len(view.heights) == len(col):
+        heights = [max(MIN_SLOT, ev(h)) for h in view.heights]
+        tot = sum(heights)
+        if tot > SCREEN_H:
+            heights[-1] = max(MIN_SLOT, heights[-1] - (tot - SCREEN_H))
+            tot = sum(heights)
+        y0 = fev((SCREEN_H - tot) / 2) if tot < SCREEN_H else 0
+    elif ncam and manual_w:
+        pass  # altezze automatiche sulla nuova larghezza
+
     W = SCREEN_W - L
-    if r_prof.kind == KIND_SCOPIA and W != SCREEN_H:
+    if r_prof.kind == KIND_SCOPIA and W != SCREEN_H and not view.is_manual:
         warnings.append(f"Scopia a destra non quadrata ({W}x{SCREEN_H})")
 
     # slot: 1 = in alto a sinistra, 2 = destra, 3.. = sotto a sinistra
@@ -384,7 +410,15 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
                 warnings.append(f"Scopia (Area {a.index}) più piccola di {MIN_SCOPIA}x{MIN_SCOPIA}")
         placements.append(Placement(a.index, slot_no, rect, "1:1"))
 
-    return ViewResult(slots, placements, warnings)
+    info = []
+    for (a, _, prof), s, it in zip(order, slots, [items[1], items[0]] + list(items[2:])):
+        if prof.is_camera:
+            continue
+        d = (s[2] / s[3]) / prof.aspect() - 1
+        if abs(d) > 0.03:
+            verso = "allargato" if d > 0 else "stretto"
+            info.append(f"{item_name(project, lib, it)}: {verso} del {abs(d) * 100:.0f}% (proporzioni non rispettate)")
+    return ViewResult(slots, placements, warnings, info)
 
 
 def rect_or_none(prof: Device) -> Optional[List[int]]:
@@ -453,6 +487,30 @@ def generate_ini(project: Project, lib: List[Device]) -> Tuple[str, List[str]]:
         if n == 1:
             out.append("")
     return "\n".join(out).rstrip() + "\n", warnings
+
+
+def _keep_file_geometry(view: View, layout_str: str, project: Project, lib: List[Device]) -> None:
+    """Se le misure del file sono diverse da quelle automatiche ma rappresentabili
+    (colonna a sinistra + sorgente a destra), le conserva come impostazioni manuali."""
+    try:
+        vals = [int(v) for v in layout_str.split(",")]
+        n = len(view.items)
+        if n < 2 or len(vals) != 4 * n:
+            return
+        slots = [tuple(vals[i:i + 4]) for i in range(0, len(vals), 4)]
+        auto = compute_view(project, lib, view).slots
+    except (ValueError, IndexError):
+        return
+    if [tuple(x) for x in auto] == slots:
+        return
+    L = slots[0][2]
+    col = [slots[0]] + slots[2:]
+    if slots[1] != (L, 0, SCREEN_W - L, SCREEN_H) or any(c[0] != 0 or c[2] != L for c in col):
+        return
+    if any(col[i][1] + col[i][3] != col[i + 1][1] for i in range(len(col) - 1)):
+        return
+    view.col_width = L
+    view.heights = [c[3] for c in col]
 
 
 # ----------------------------------------------------------------- import .ini
@@ -532,10 +590,11 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
         n = len(locs)
         parts = [x.strip() for x in sec.get("name", "").split("+")]
         slot_order = [1] if n == 1 else [2, 1] + list(range(3, n + 1))
-        raw_views.append((sec.get("name", vn).strip(), locs, slot_order, parts))
+        raw_views.append((sec.get("name", vn).strip(), locs, slot_order, parts,
+                          sec.get(f"layout{n}", "")))
 
     learned = []
-    for vname, locs, slot_order, parts in raw_views:
+    for vname, locs, slot_order, parts, layout_str in raw_views:
         items = []
         for pos, slot in enumerate(slot_order):
             if slot not in locs:
@@ -573,7 +632,9 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
                 if not a.label and not dev.is_camera:
                     a.label = part
             items.append(ViewItem(ai, "" if dev.name == a.device else dev.name))
-        p.views.append(View("", items))  # nomi standard (LIVE, CAM, POLY...) ricalcolati
+        view = View("", items)  # nomi standard (LIVE, CAM, POLY...) ricalcolati
+        _keep_file_geometry(view, layout_str, p, lib)
+        p.views.append(view)
 
     for a in p.areas:
         if (a.source or a.comment) and not a.device:

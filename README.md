@@ -46,6 +46,19 @@ si condivide il catalogo con i colleghi.
 
    Anche i layout aperti con *Apri .ini esistente…* prendono questi nomi.
 
+   **Modifica con il mouse nell'anteprima:**
+   - trascina la **linea verticale** per cambiare la larghezza della colonna sinistra;
+   - trascina una **linea orizzontale** per cambiare le altezze in colonna;
+   - trascina un **segnale sopra un altro** per scambiarli di posto
+     (le misure tornano automatiche per la nuova disposizione);
+   - **doppio clic** su una linea la riporta al valore automatico;
+     *↺ Misure automatiche* / *↺ Tutte automatiche* annullano le modifiche a mano.
+
+   Le viste modificate a mano sono segnate con ✎. I rectangle delle telecamere
+   si ricalcolano sempre sullo spazio nuovo; se un dispositivo viene deformato
+   l'anteprima indica di quanto. Aprendo un `.ini` esistente le misure del file
+   vengono conservate.
+
    L'anteprima mostra la disposizione e i valori calcolati.
 3. **Catalogo dispositivi** – aggiungi/modifica dispositivi (nome, sigla, tipo,
    risoluzione, rectangle). Viene salvato automaticamente.

@@ -9,14 +9,17 @@ import layout_engine as E
 POSITIONS = ["Grande a destra", "In alto a sinistra", "Sotto a sinistra", "Ancora sotto (4ª)"]
 KIND_COLORS = {E.KIND_SCOPIA: "#4a78c2", E.KIND_DEVICE: "#3f9a6b", E.KIND_CAMERA: "#c98a2e"}
 NONE = "—"
+SC = 0.3                                     # scala dell'anteprima (1920x1080 -> 576x324)
+PW, PH = int(E.SCREEN_W * SC), int(E.SCREEN_H * SC)
+GRAB = 6                                     # tolleranza in pixel per afferrare una linea
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("OneView Layout Generator")
-        self.geometry("1180x720")
-        self.minsize(1000, 620)
+        self.geometry("1260x790")
+        self.minsize(1100, 700)
         self.lib = E.load_library()
         self.project = E.Project()
         self.cur_view = None
@@ -200,13 +203,35 @@ class App(tk.Tk):
             cp.bind("<<ComboboxSelected>>", lambda e: self._editor_to_view())
             self.pos_rows.append(dict(va=va, vp=vp, ca=ca, cp=cp))
 
-        self.canvas = tk.Canvas(right, width=480, height=270, bg="#1e1e1e", highlightthickness=1,
+        tb = ttk.Frame(right)
+        tb.pack(fill="x", pady=(2, 2))
+        self.lbl_geom = ttk.Label(tb, text="", font=("Segoe UI", 9, "bold"))
+        self.lbl_geom.pack(side="left")
+        ttk.Button(tb, text="↺ Tutte automatiche", command=self.reset_all_geometry).pack(side="right")
+        ttk.Button(tb, text="↺ Misure automatiche", command=self.reset_geometry).pack(side="right", padx=4)
+        ttk.Label(right, text="Trascina le linee di divisione per ridimensionare · trascina un segnale sopra "
+                              "un altro per scambiarli · doppio clic su una linea = torna automatica",
+                  foreground="#777").pack(anchor="w")
+        cv_row = ttk.Frame(right)
+        cv_row.pack(fill="both", expand=True, pady=(4, 0))
+        self.canvas = tk.Canvas(cv_row, width=PW, height=PH, bg="#1e1e1e", highlightthickness=1,
                                 highlightbackground="#888")
-        self.canvas.pack(anchor="w", pady=(4, 6))
-        self.lbl_calc = ttk.Label(right, text="", font=("Consolas", 9), justify="left")
+        self.canvas.pack(side="left", anchor="n")
+        side = ttk.Frame(cv_row, padding=(10, 0, 0, 0))
+        side.pack(side="left", fill="both", expand=True)
+        self.canvas.bind("<Motion>", self._cv_motion)
+        self.canvas.bind("<ButtonPress-1>", self._cv_press)
+        self.canvas.bind("<B1-Motion>", self._cv_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._cv_release)
+        self.canvas.bind("<Double-Button-1>", self._cv_double)
+        self._res = None
+        self._drag = None
+        self.lbl_calc = ttk.Label(side, text="", font=("Consolas", 9), justify="left", wraplength=330)
         self.lbl_calc.pack(anchor="w")
-        self.lbl_warn = ttk.Label(right, text="", foreground="#b25a00", justify="left", wraplength=640)
-        self.lbl_warn.pack(anchor="w", pady=(4, 0))
+        self.lbl_warn = ttk.Label(side, text="", foreground="#b25a00", justify="left", wraplength=330)
+        self.lbl_warn.pack(anchor="w", pady=(6, 0))
+        self.lbl_info = ttk.Label(side, text="", foreground="#666", justify="left", wraplength=330)
+        self.lbl_info.pack(anchor="w", pady=(4, 0))
         self._set_editor_state(False)
 
     def _area_choices(self):
@@ -238,12 +263,8 @@ class App(tk.Tk):
 
     def _refresh_view_list(self, select=None):
         self.lb_views.delete(0, "end")
-        for i, v in enumerate(self.project.views, start=1):
-            try:
-                nm = v.name or E.auto_view_name(self.project, self.lib, v)
-            except ValueError:
-                nm = v.name or "(vista incompleta)"
-            self.lb_views.insert("end", f"View{i}  {nm}")
+        for i, v in enumerate(self.project.views):
+            self.lb_views.insert("end", self._view_label(i, v))
         if select is not None and 0 <= select < len(self.project.views):
             self.lb_views.selection_set(select)
             self.lb_views.see(select)
@@ -302,55 +323,214 @@ class App(tk.Tk):
             # il nome forzato (es. HEMO) resta finché la sorgente non cambia
             alias = next((o.alias for o in v.items if o.area == idx and o.profile == prof), "")
             items.append(E.ViewItem(idx, prof, alias))
+        if [(o.area, o.profile) for o in v.items] != [(o.area, o.profile) for o in items]:
+            v.reset_geometry()  # sorgenti cambiate: misure di nuovo automatiche
         v.items = items
-        sel = self.cur_view
+        self._update_list_row()
+        self._draw_preview()
+
+    # -------------------------------------------------- anteprima interattiva
+    def _view_label(self, i, v):
         try:
             nm = v.name or E.auto_view_name(self.project, self.lib, v)
         except ValueError:
             nm = v.name or "(vista incompleta)"
-        self.lb_views.delete(sel)
-        self.lb_views.insert(sel, f"View{sel + 1}  {nm}")
-        self.lb_views.selection_set(sel)
-        self._draw_preview()
+        return f"View{i + 1}  {nm}" + ("   ✎" if v.is_manual else "")
 
-    def _draw_preview(self):
+    def _update_list_row(self):
+        sel = self.cur_view
+        if sel is None:
+            return
+        self.lb_views.delete(sel)
+        self.lb_views.insert(sel, self._view_label(sel, self.project.views[sel]))
+        self.lb_views.selection_set(sel)
+
+    def _draw_preview(self, highlight=None):
         c = self.canvas
         c.delete("all")
-        self.lbl_calc["text"] = ""
-        self.lbl_warn["text"] = ""
-        self.lbl_autoname["text"] = ""
+        self._res = None
+        for lbl in (self.lbl_calc, self.lbl_warn, self.lbl_info, self.lbl_autoname, self.lbl_geom):
+            lbl["text"] = ""
         if self.cur_view is None:
-            c.create_text(240, 135, text="Seleziona o aggiungi una vista", fill="#aaa")
+            c.create_text(PW / 2, PH / 2, text="Seleziona o aggiungi una vista", fill="#aaa")
             return
         v = self.project.views[self.cur_view]
         if not v.items:
-            c.create_text(240, 135, text="Scegli le aree nelle posizioni", fill="#aaa")
+            c.create_text(PW / 2, PH / 2, text="Scegli le aree nelle posizioni", fill="#aaa")
             return
         try:
             res = E.compute_view(self.project, self.lib, v)
             self.lbl_autoname["text"] = "automatico: " + E.auto_view_name(self.project, self.lib, v)
         except ValueError as e:
-            c.create_text(240, 135, text=str(e), fill="#f88", width=440)
+            c.create_text(PW / 2, PH / 2, text=str(e), fill="#f88", width=PW - 40)
             return
-        s = 0.25
+        self._res = res
+        self.lbl_geom["text"] = ("Misure: impostate a mano ✎" if v.is_manual else "Misure: automatiche")
         names = {}
         for it in v.items:
             a, _, prof = E.resolve_item(self.project, self.lib, it)
             names[a.index] = (E.item_name(self.project, self.lib, it), prof.kind)
         lines = []
-        for pl, slot in zip(res.placements, res.slots):
+        for k, (pl, slot) in enumerate(zip(res.placements, res.slots)):
             x, y, w, h = slot
             nm, kind = names[pl.area]
-            c.create_rectangle(x * s, y * s, (x + w) * s, (y + h) * s,
-                               fill=KIND_COLORS.get(kind, "#666"), outline="#111", width=2)
-            c.create_text((x + w / 2) * s, (y + h / 2) * s, text=f"{nm}\n{w}×{h}",
-                          fill="white", justify="center", font=("Segoe UI", 9, "bold"))
+            hl = highlight is not None and highlight == k
+            c.create_rectangle(x * SC, y * SC, (x + w) * SC, (y + h) * SC,
+                               fill=KIND_COLORS.get(kind, "#666"),
+                               outline="#ffd54a" if hl else "#111", width=4 if hl else 2)
+            c.create_text((x + w / 2) * SC, (y + h / 2) * SC, text=f"{nm}\n{w}×{h}",
+                          fill="white", justify="center", font=("Segoe UI", 10, "bold"))
             rect = ",".join(map(str, pl.rect)) if pl.rect else "(intero)"
-            lines.append(f"Slot {pl.slot}: Area{pl.area} {nm:<8} Layout {x},{y},{w},{h}   Rectangle {rect}")
+            lines.append(f"Slot {pl.slot} · Area{pl.area} {nm}\n  Layout    {x},{y},{w},{h}\n  Rectangle {rect}")
+        # linee di divisione afferrabili
+        for kind, pos, a, b, *_ in self._dividers():
+            if kind == "v":
+                c.create_line(pos * SC, a * SC, pos * SC, b * SC, fill="#e0e0e0", width=3, dash=(4, 3))
+            else:
+                c.create_line(a * SC, pos * SC, b * SC, pos * SC, fill="#e0e0e0", width=3, dash=(4, 3))
+        if self._drag and self._drag["type"] == "slot" and self._drag.get("moved"):
+            src = self._drag["k"]
+            x, y = self._drag["xy"]
+            nm = names[res.placements[src].area][0]
+            c.create_text(x, y - 12, text=f"↔ {nm}", fill="#ffd54a", font=("Segoe UI", 11, "bold"))
         n = len(res.slots)
         lines.insert(0, f"Layout{n}=" + ",".join(",".join(map(str, sl)) for sl in res.slots))
         self.lbl_calc["text"] = "\n".join(lines)
         self.lbl_warn["text"] = "\n".join("⚠ " + w for w in res.warnings)
+        self.lbl_info["text"] = "\n".join("ℹ " + i for i in res.info)
+
+    def _col_slots(self):
+        s = self._res.slots
+        return [s[0]] + list(s[2:])
+
+    def _dividers(self):
+        """Linee spostabili: ('v', x, y0, y1) tra colonna e destra, ('h', y, x0, x1, i) tra slot in colonna."""
+        if not self._res or len(self._res.slots) < 2:
+            return []
+        col = self._col_slots()
+        L = col[0][2]
+        out = [("v", L, 0, E.SCREEN_H)]
+        for i in range(len(col) - 1):
+            out.append(("h", col[i][1] + col[i][3], 0, L, i))
+        return out
+
+    def _hit_divider(self, cx, cy):
+        for d in self._dividers():
+            if d[0] == "v" and abs(cx - d[1] * SC) <= GRAB:
+                return d
+            if d[0] == "h" and abs(cy - d[1] * SC) <= GRAB and cx <= d[3] * SC + GRAB:
+                return d
+        return None
+
+    def _hit_slot(self, cx, cy):
+        if not self._res:
+            return None
+        x, y = cx / SC, cy / SC
+        for k, (sx, sy, sw, sh) in enumerate(self._res.slots):
+            if sx <= x < sx + sw and sy <= y < sy + sh:
+                return k
+        return None
+
+    @staticmethod
+    def _slot_to_item(k):
+        # slot 1 (k=0) = in alto a sinistra = items[1]; slot 2 (k=1) = destra = items[0]
+        return {0: 1, 1: 0}.get(k, k)
+
+    def _cv_motion(self, e):
+        d = self._hit_divider(e.x, e.y)
+        if d:
+            self.canvas["cursor"] = "sb_h_double_arrow" if d[0] == "v" else "sb_v_double_arrow"
+        elif self._hit_slot(e.x, e.y) is not None and len(self._res.slots) > 1:
+            self.canvas["cursor"] = "fleur"
+        else:
+            self.canvas["cursor"] = ""
+
+    def _cv_press(self, e):
+        self._drag = None
+        if self.cur_view is None or not self._res:
+            return
+        d = self._hit_divider(e.x, e.y)
+        if d:
+            self._drag = {"type": d[0], "div": d}
+            return
+        k = self._hit_slot(e.x, e.y)
+        if k is not None and len(self._res.slots) > 1:
+            self._drag = {"type": "slot", "k": k, "xy": (e.x, e.y), "moved": False}
+
+    def _cv_drag(self, e):
+        if not self._drag or self.cur_view is None:
+            return
+        v = self.project.views[self.cur_view]
+        if self._drag["type"] == "v":
+            v.col_width = max(E.MIN_SLOT, min(E.ev(e.x / SC), E.SCREEN_W - E.MIN_SLOT))
+            self._draw_preview()
+        elif self._drag["type"] == "h":
+            i = self._drag["div"][4]
+            col = self._col_slots()
+            if not v.heights or len(v.heights) != len(col):
+                v.heights = [c[3] for c in col]
+            top = col[i][1]
+            bottom = col[i + 1][1] + col[i + 1][3]
+            y = max(top + E.MIN_SLOT, min(E.ev(e.y / SC), bottom - E.MIN_SLOT))
+            v.heights[i] = y - top
+            v.heights[i + 1] = bottom - y
+            self._draw_preview()
+        else:
+            self._drag["xy"] = (e.x, e.y)
+            self._drag["moved"] = True
+            tgt = self._hit_slot(e.x, e.y)
+            self._draw_preview(highlight=tgt if tgt != self._drag["k"] else None)
+        self._update_list_row()
+
+    def _cv_release(self, e):
+        drag, self._drag = self._drag, None
+        if not drag or self.cur_view is None:
+            return
+        if drag["type"] == "slot":
+            tgt = self._hit_slot(e.x, e.y)
+            if drag.get("moved") and tgt is not None and tgt != drag["k"]:
+                self.swap_slots(drag["k"], tgt)
+                return
+        self._draw_preview()
+
+    def _cv_double(self, e):
+        if self.cur_view is None:
+            return
+        d = self._hit_divider(e.x, e.y)
+        if not d:
+            return
+        v = self.project.views[self.cur_view]
+        if d[0] == "v":
+            v.col_width = 0
+        else:
+            v.heights = []
+        self._drag = None
+        self._draw_preview()
+        self._update_list_row()
+
+    def swap_slots(self, k1, k2):
+        v = self.project.views[self.cur_view]
+        i, j = self._slot_to_item(k1), self._slot_to_item(k2)
+        v.items[i], v.items[j] = v.items[j], v.items[i]
+        v.reset_geometry()  # nuova disposizione: si riparte dalle misure automatiche
+        self._refresh_view_list(self.cur_view)
+
+    def reset_geometry(self):
+        if self.cur_view is None:
+            return
+        self.project.views[self.cur_view].reset_geometry()
+        self._draw_preview()
+        self._update_list_row()
+
+    def reset_all_geometry(self):
+        manual = [v for v in self.project.views if v.is_manual]
+        if not manual:
+            return
+        if messagebox.askyesno("Misure automatiche",
+                               f"Ricalcolare in automatico le misure di {len(manual)} viste impostate a mano?"):
+            for v in manual:
+                v.reset_geometry()
+            self._refresh_view_list(self.cur_view)
 
     def quick_add(self):
         self._areas_to_project()
@@ -372,7 +552,8 @@ class App(tk.Tk):
             return
         v = self.project.views[self.cur_view]
         self.project.views.insert(self.cur_view + 1,
-                                  E.View(v.name, [E.ViewItem(i.area, i.profile, i.alias) for i in v.items]))
+                                  E.View(v.name, [E.ViewItem(i.area, i.profile, i.alias) for i in v.items],
+                                         v.col_width, list(v.heights)))
         self._refresh_view_list(self.cur_view + 1)
 
     def move_view(self, d):
@@ -566,7 +747,8 @@ class App(tk.Tk):
             return
         self._load_project_into_ui()
         self.nb.select(0)
-        msg = "Layout caricato. Le viste verranno ricalcolate con le regole attuali."
+        msg = ("Layout caricato. Le misure del file sono state conservate (viste segnate con ✎);\n"
+               "usa «↺ Tutte automatiche» nel tab Viste per ricalcolarle con le regole attuali.")
         if notes:
             msg += "\n\n" + "\n".join("• " + n for n in notes)
         messagebox.showinfo("Importazione", msg)
