@@ -1,0 +1,58 @@
+# OneView Layout Generator
+
+Programma Windows che scrive in automatico i file di layout (`LayoutN.ini`) per OneView:
+si configurano le aree (collegamenti fisici), si scrivono le viste
+(es. `Fluoro + IVUS + Cam1`) e il programma calcola `LayoutN=`, i `Rectangle`
+delle telecamere e tutto il resto del file.
+
+## Download e avvio
+
+Scarica [`release/OneViewLayoutGenerator.exe`](release/OneViewLayoutGenerator.exe)
+(pulsante *Download raw file*), mettilo in una cartella a tua scelta e fai doppio clic.
+Non serve installare nulla. Al primo avvio Windows SmartScreen può mostrare
+"Windows ha protetto il PC": clic su *Ulteriori informazioni* → *Esegui comunque*.
+
+Accanto all'eseguibile viene creato `catalogo_dispositivi.json`, il catalogo dei
+dispositivi con risoluzioni e rectangle. Copiando insieme `.exe` e `.json`
+si condivide il catalogo con i colleghi.
+
+## Uso
+
+1. **Aree (collegamenti)** – per ogni area: dispositivo, slot della scheda
+   (es. `SLOTDEV_06BC USBMI_02`, `HD Video 1`, `SN:...`), commento, etichetta
+   (Cam1, Cam2, Fluoro, IVUS…).
+2. **Viste** – scrivi la vista e premi Invio. La **prima** sorgente va grande a
+   destra, le altre in colonna a sinistra dall'alto verso il basso:
+   - `Fluoro + Poly + Cam1` → scopia grande a destra, poligrafo in alto, camera sotto
+   - `IVUS + Fluoro + Cam2` → IVUS grande a destra, scopia in alto a sinistra
+   - `Cam1` → camera a schermo intero (16:9)
+   - `FFR` usa l'area dell'IVUS con il rectangle dell'FFR (stessa risoluzione)
+
+   L'anteprima mostra la disposizione e i valori calcolati.
+3. **Catalogo dispositivi** – aggiungi/modifica dispositivi (nome, sigla, tipo,
+   risoluzione, rectangle). Viene salvato automaticamente.
+4. **File .ini** – testo generato, ritoccabile a mano, poi *Salva .ini…*.
+
+*Apri .ini esistente…* carica un layout già fatto; i rectangle sconosciuti
+vengono aggiunti al catalogo.
+
+## Regole di calcolo
+
+- Schermo 1920×1080; slot 1 = in alto a sinistra, 2 = destra, 3+ = sotto a sinistra.
+- Larghezza della sorgente a destra = 1080 × proporzioni del suo rectangle.
+- Altezza dei dispositivi in colonna = larghezza colonna ÷ proporzioni del rectangle.
+- Scopia in colonna mai sotto **600×600**; telecamera mai sotto **400 px** di altezza.
+- Telecamera: ritaglio più grande possibile con le proporzioni dello spazio libero,
+  centrato; valori arrotondati per difetto a numeri pari.
+- `Ratio` 16:9 solo per le viste con la sola camera, altrimenti 1:1.
+- `[Censoring]` resta vuoto (da compilare a mano).
+
+## Sviluppo
+
+Codice in Python 3.9+ (solo libreria standard, interfaccia tkinter):
+
+- `layout_engine.py` – calcolo, lettura e scrittura dei `.ini`
+- `layout_generator.py` – interfaccia grafica
+
+Avvio da sorgente: `py layout_generator.py`
+Ricostruzione dell'eseguibile: `build.bat` (richiede `pip install pyinstaller`).
