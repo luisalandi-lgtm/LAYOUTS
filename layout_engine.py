@@ -198,8 +198,8 @@ class View:
 class Project:
     name: str = "Nuovo layout"
     audio: str = "VoiceMeeter Output"
-    parse_mode: str = "censoringdinamico.dll,0"
-    parse_mode_commented: str = "GeneraleParse.dll,0"
+    parse_mode: str = "GeneraleParse.dll,0"   # i dispositivi possono sostituirlo (es. censoringdinamico)
+    parse_mode_commented: str = ""
     screen: str = "1920x1080"    # schermo OneView: "1920x1080" (Full HD) o "1280x720" (HD)
     extra_info: List[str] = field(default_factory=list)  # altre righe [Info] lette da un .ini
     areas: List[Area] = field(default_factory=lambda: [Area(i) for i in range(1, 6)])
@@ -477,23 +477,41 @@ def rect_or_none(prof: Device) -> Optional[List[int]]:
 def generate_ini(project: Project, lib: List[Device]) -> Tuple[str, List[str]]:
     warnings: List[str] = []
     out = ["[Info]", f"Name={project.name}", f"AudioSourceName={project.audio}"]
-    if project.parse_mode_commented:
-        out.append(f";ParseMode={project.parse_mode_commented}")
-    if project.parse_mode:
-        out.append(f"ParseMode={project.parse_mode}")
+
+    def key(ln):
+        return ln.split("=", 1)[0].strip().lower()
+
+    def value(ln):
+        return ln.split("=", 1)[1].strip() if "=" in ln else ""
+
     # le chiavi gestite da un dispositivo del catalogo compaiono solo se quel dispositivo è usato
-    managed = {ln.split("=", 1)[0].strip().lower() for d in lib for ln in device_info_lines(d, 0)}
-    extra = [ln for ln in project.extra_info if ln.split("=", 1)[0].strip().lower() not in managed]
+    managed = {key(ln) for d in lib for ln in device_info_lines(d, 0)}
+    extra = [ln for ln in project.extra_info if key(ln) not in managed]
     for a in project.areas:
         d = find_device(lib, a.device) if a.device else None
         if d:
             extra += device_info_lines(d, a.index)
-    seen = set()
+    lines, seen = [], set()
     for ln in extra:
-        key = ln.split("=", 1)[0].strip().lower()
-        if key not in seen:  # una sola riga per chiave (prima quella del file, poi dei dispositivi)
-            seen.add(key)
-            out.append(ln)
+        if key(ln) not in seen:  # una sola riga per chiave (prima quella del file, poi dei dispositivi)
+            seen.add(key(ln))
+            lines.append(ln)
+
+    # ParseMode: un dispositivo che ne indica uno (es. censoringdinamico) sostituisce quello
+    # predefinito, che resta nel file come commento
+    dev_parse = next((ln for ln in lines if key(ln) == "parsemode"), None)
+    commented = [project.parse_mode_commented] if project.parse_mode_commented else []
+    active = project.parse_mode
+    if dev_parse and active and active != value(dev_parse):
+        commented.append(active)
+    if dev_parse:
+        active = value(dev_parse)
+    for c in dict.fromkeys(commented):
+        if c != active:
+            out.append(f";ParseMode={c}")
+    if active:
+        out.append(f"ParseMode={active}")
+    out += [ln for ln in lines if key(ln) != "parsemode"]
     out += ["", "[Sources]"]
 
     used = [a for a in project.areas if a.device]
@@ -722,6 +740,20 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
         _keep_file_geometry(view, layout_str, p, lib)
         p.views.append(view)
 
+    for a in p.areas:
+        # aree non usate in nessuna vista: si riconosce il dispositivo dal commento
+        if a.source and not a.device and a.comment:
+            res = resl.get(f"resolution{a.index}", "")
+            c = a.comment.lower()
+            hit = [d for d in lib if d.resolution == res and (d.name.lower() in c or c in d.name.lower())]
+            if hit:
+                a.device = hit[0].name
+                if hit[0].is_camera:
+                    n = 1 + sum(1 for b in p.areas if b.index < a.index and b.device
+                                and find_device(lib, b.device) and find_device(lib, b.device).is_camera)
+                    a.label = a.label or f"CAM{n}"
+                else:
+                    a.label = a.label or dev_class(hit[0])
     for a in p.areas:
         if (a.source or a.comment) and not a.device:
             notes.append(f"Area {a.index} non usata in nessuna vista: scegli il dispositivo a mano")

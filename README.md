@@ -66,6 +66,10 @@ si condivide il catalogo con i colleghi.
    quando il dispositivo è assegnato a un'area (più righe separate da `;`,
    `{area}` = numero dell'area). Ogni dispositivo con "OBSBOT" nel nome riceve
    in automatico `PelcoCamera2Source=Y`.
+   Di predefinito il layout ha `ParseMode=GeneraleParse.dll,0`; se un dispositivo
+   usato ha una riga `ParseMode=...` (es. `ParseMode=censoringdinamico.dll,0`),
+   quella diventa attiva e la predefinita resta come commento
+   `;ParseMode=GeneraleParse.dll,0`.
 4. **File .ini** – testo generato, ritoccabile a mano, poi *Salva .ini…* oppure
    *Copia negli appunti* (anche dalla barra in alto).
 
