@@ -51,6 +51,9 @@ class App(tk.Tk):
         ttk.Button(bf, text="Nuovo", command=self.new_project).pack(side="left", padx=2)
         ttk.Button(bf, text="Apri .ini esistente…", command=self.import_ini).pack(side="left", padx=2)
         ttk.Button(bf, text="Salva .ini…", command=self.save_ini).pack(side="left", padx=2)
+        ttk.Button(bf, text="Copia negli appunti", command=self.copy_ini).pack(side="left", padx=2)
+        self.lbl_status = ttk.Label(f, text="", foreground="#2e7d32")
+        self.lbl_status.grid(row=1, column=6, sticky="e", padx=(12, 0))
 
     def _sync_header(self):
         self.project.name = self.v_name.get().strip()
@@ -82,7 +85,7 @@ class App(tk.Tk):
             ttk.Entry(t, textvariable=src, width=30).grid(row=r, column=3, padx=4)
             ttk.Entry(t, textvariable=com, width=24).grid(row=r, column=4, padx=4)
             ttk.Entry(t, textvariable=lab, width=14).grid(row=r, column=5, padx=4)
-            row = dict(dev=dev, res=res, src=src, com=com, lab=lab, cb=cb)
+            row = dict(dev=dev, res=res, src=src, com=com, lab=lab, cb=cb, auto_com="", auto_lab="")
             cb.bind("<<ComboboxSelected>>", lambda e, idx=i: self._on_area_device(idx))
             for v in (src, com, lab):
                 v.trace_add("write", lambda *a: self._areas_to_project())
@@ -97,23 +100,30 @@ class App(tk.Tk):
         for row in self.area_rows:
             row["cb"]["values"] = names
 
+    def _auto_values(self, idx, d):
+        """Commento ed etichetta proposti automaticamente per il dispositivo d nell'area idx."""
+        if d is None:
+            return "", ""
+        if d.is_camera:
+            n = 1 + sum(1 for j, r in enumerate(self.area_rows[:idx])
+                        if (E.find_device(self.lib, r["dev"].get()) or d).is_camera
+                        and E.find_device(self.lib, r["dev"].get()) is not None)
+            return d.name, f"Cam{n}"
+        return d.name, d.sigla
+
     def _on_area_device(self, idx):
         row = self.area_rows[idx]
         d = E.find_device(self.lib, row["dev"].get())
+        new_com, new_lab = self._auto_values(idx, d)
         self._loading = True
-        if d:
-            row["res"].set(d.resolution)
-            if not row["com"].get():
-                row["com"].set(d.name)
-            if not row["lab"].get():
-                if d.is_camera:
-                    ncam = sum(1 for j, r in enumerate(self.area_rows)
-                               if j != idx and (E.find_device(self.lib, r["dev"].get()) or E.Device("", "", "", "1x1")).is_camera)
-                    row["lab"].set(f"Cam{ncam + 1}")
-                else:
-                    row["lab"].set(d.sigla)
-        else:
-            row["res"].set("")
+        row["res"].set(d.resolution if d else "")
+        # i campi compilati in automatico (o vuoti) seguono il nuovo dispositivo;
+        # quelli modificati a mano restano come sono
+        if not row["com"].get().strip() or row["com"].get() == row["auto_com"]:
+            row["com"].set(new_com)
+        if not row["lab"].get().strip() or row["lab"].get() == row["auto_lab"]:
+            row["lab"].set(new_lab)
+        row["auto_com"], row["auto_lab"] = new_com, new_lab
         self._loading = False
         self._areas_to_project()
 
@@ -133,15 +143,17 @@ class App(tk.Tk):
         self.nb.add(t, text="2. Viste")
 
         q = ttk.Frame(t)
-        q.pack(fill="x", pady=(0, 10))
-        ttk.Label(q, text="Scrivi una vista (la prima sorgente va grande a destra):").pack(side="left")
+        q.pack(fill="x", pady=(0, 2))
+        ttk.Label(q, text="Scrivi una vista:").pack(side="left")
         self.v_quick = tk.StringVar()
-        e = ttk.Entry(q, textvariable=self.v_quick, width=40)
+        e = ttk.Entry(q, textvariable=self.v_quick, width=48)
         e.pack(side="left", padx=6)
         e.bind("<Return>", lambda ev: self.quick_add())
         ttk.Button(q, text="Aggiungi", command=self.quick_add).pack(side="left")
-        ttk.Label(q, text="es.  Fluoro + IVUS + Cam1   ·   IVUS + Fluoro + Cam2   ·   Cam1",
-                  foreground="#777").pack(side="left", padx=10)
+        ttk.Label(t, text="La sorgente indicata come «grande» (oppure la prima) va a destra. Separatori: + , e    "
+                          "es.  Fluoro + IVUS + Cam1  ·  live, poligrafo, cam  ·  cam grande e live piccola  ·  "
+                          "IVUS e scopia e cam 2",
+                  foreground="#777").pack(anchor="w", pady=(0, 10))
 
         body = ttk.Frame(t)
         body.pack(fill="both", expand=True)
@@ -337,48 +349,10 @@ class App(tk.Tk):
         self.lbl_calc["text"] = "\n".join(lines)
         self.lbl_warn["text"] = "\n".join("⚠ " + w for w in res.warnings)
 
-    def _parse_quick(self, text):
-        parts = [p.strip() for p in text.split("+") if p.strip()]
-        if not parts:
-            raise ValueError("Scrivi almeno una sorgente")
-        items = []
-        used = set()
-        active = [a for a in self.project.areas if a.device]
-        for part in parts:
-            pl = part.lower()
-            it = None
-            for a in active:
-                if a.index not in used and a.label.lower() == pl:
-                    it = E.ViewItem(a.index)
-                    break
-            if it is None:
-                cands = [d for d in self.lib if pl in (d.sigla.lower(), d.name.lower())]
-                for d in cands:
-                    a = next((a for a in active if a.index not in used and a.device == d.name), None)
-                    if a:
-                        it = E.ViewItem(a.index)
-                        break
-                if it is None:
-                    for d in cands:
-                        a = next((a for a in active if a.index not in used
-                                  and (E.find_device(self.lib, a.device).resolution == d.resolution)
-                                  and E.find_device(self.lib, a.device).is_camera == d.is_camera), None)
-                        if a:
-                            it = E.ViewItem(a.index, d.name)
-                            break
-            if it is None:
-                raise ValueError(f"'{part}' non corrisponde a nessuna area configurata.\n"
-                                 "Usa le etichette del tab Aree (es. Cam1, Fluoro) o la sigla di un dispositivo del catalogo.")
-            used.add(it.area)
-            items.append(it)
-        if len(items) > 4:
-            raise ValueError("Massimo 4 sorgenti per vista")
-        return items
-
     def quick_add(self):
         self._areas_to_project()
         try:
-            items = self._parse_quick(self.v_quick.get())
+            items = E.parse_view_text(self.project, self.lib, self.v_quick.get())
         except ValueError as e:
             messagebox.showerror("Vista non riconosciuta", str(e))
             return
@@ -514,6 +488,7 @@ class App(tk.Tk):
         bf.pack(fill="x", pady=(0, 6))
         ttk.Button(bf, text="Rigenera", command=self.regenerate).pack(side="left")
         ttk.Button(bf, text="Salva .ini…", command=self.save_ini).pack(side="left", padx=6)
+        ttk.Button(bf, text="Copia negli appunti", command=self.copy_ini).pack(side="left")
         ttk.Label(bf, text="Puoi ritoccare il testo a mano prima di salvare (Rigenera annulla le modifiche).",
                   foreground="#777").pack(side="left", padx=10)
         self.lbl_out_warn = ttk.Label(t, text="", foreground="#b25a00", justify="left", wraplength=1100)
@@ -562,6 +537,12 @@ class App(tk.Tk):
             row["src"].set(a.source)
             row["com"].set(a.comment)
             row["lab"].set(a.label)
+            row["auto_com"], row["auto_lab"] = "", ""
+        for i, row in enumerate(self.area_rows):
+            # i valori che coincidono con quelli automatici continueranno ad aggiornarsi
+            ac, al = self._auto_values(i, E.find_device(self.lib, row["dev"].get()))
+            row["auto_com"] = ac if row["com"].get() == ac else ""
+            row["auto_lab"] = al if row["lab"].get() == al else ""
         self._loading = False
         self._refresh_lib()
         self._refresh_view_list(0 if self.project.views else None)
@@ -586,6 +567,17 @@ class App(tk.Tk):
         if notes:
             msg += "\n\n" + "\n".join("• " + n for n in notes)
         messagebox.showinfo("Importazione", msg)
+
+    def copy_ini(self):
+        # nel tab "File .ini" si copia il testo così com'è (con eventuali ritocchi a mano)
+        if self.nb.index(self.nb.select()) != 3:
+            self.regenerate()
+        text = self.txt.get("1.0", "end").rstrip() + "\n"
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()
+        self.lbl_status["text"] = "✓ Testo del layout copiato negli appunti"
+        self.after(3000, lambda: self.lbl_status.configure(text=""))
 
     def save_ini(self):
         if self.nb.index(self.nb.select()) != 3:

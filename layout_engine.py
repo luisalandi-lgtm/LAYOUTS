@@ -12,6 +12,7 @@ Convenzioni (ricavate dai layout esistenti):
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Tuple
@@ -271,12 +272,13 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
     col = resolved[1:]
     r_prof = right[2]
 
+    col_has_scopia = any(p.kind == KIND_SCOPIA for _, _, p in col)
     if r_prof.is_camera:
-        L = SCREEN_W - SCREEN_H  # camera a destra: area 1080x1080
+        # camera grande a destra: la colonna è larga quanto serve (scopia 600x600)
+        L = MIN_SCOPIA if col_has_scopia else SCREEN_W - SCREEN_H
     else:
         L = ev(SCREEN_W - SCREEN_H * r_prof.aspect())
 
-    col_has_scopia = any(p.kind == KIND_SCOPIA for _, _, p in col)
     if col_has_scopia and L < MIN_SCOPIA:
         L = MIN_SCOPIA
     L = max(200, min(L, SCREEN_W - 400))
@@ -307,12 +309,13 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
                 L = newL
                 hs = fixed_heights(L)
     elif not ncam:
+        # senza telecamere in colonna: le proporzioni si mantengono e la colonna
+        # viene centrata in verticale; si comprime solo se non entra nello schermo
         tot = sum(hs)
-        if abs(tot - SCREEN_H) > 1:
+        if tot > SCREEN_H:
             k = SCREEN_H / tot
             hs = [h * k for h in hs]
-            if k < 1:
-                warnings.append("Dispositivi in colonna compressi in altezza per stare nello schermo")
+            warnings.append("Dispositivi in colonna compressi in altezza per stare nello schermo")
 
     # altezze intere pari; le telecamere si dividono lo spazio rimanente
     fixed = [None if h is None else fev(h) for h in hs]
@@ -327,8 +330,13 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
             heights.append(ch)
         else:
             heights.append(h)
+    y0 = 0
     if not ncam:
-        heights[-1] += SCREEN_H - sum(heights)
+        gap = SCREEN_H - sum(heights)
+        if gap > 0:
+            y0 = fev(gap / 2)
+        else:
+            heights[-1] += gap
 
     W = SCREEN_W - L
     if r_prof.kind == KIND_SCOPIA and W != SCREEN_H:
@@ -336,7 +344,7 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
 
     # slot: 1 = in alto a sinistra, 2 = destra, 3.. = sotto a sinistra
     col_slots = []
-    y = 0
+    y = y0
     for h in heights:
         col_slots.append((0, y, L, h))
         y += h
@@ -552,3 +560,124 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
     if learned:
         notes.append("Aggiunti al catalogo: " + ", ".join(learned))
     return p, notes
+
+
+# ----------------------------------------------------------------- vista da testo
+# Separatori ammessi tra le sorgenti: + , ; & / "e" "and" "con"
+_SEP_RE = re.compile(r"\s*(?:\+|,|;|&|/|\be\b|\bed\b|\band\b|\bcon\b)\s*", re.IGNORECASE)
+# Parole che indicano la sorgente grande (va a destra)
+_BIG_RE = re.compile(r"\b(grande|grandi|big|large|principale|intero|intera|full|destra)\b", re.IGNORECASE)
+# Parole di contorno da ignorare
+_NOISE_RE = re.compile(
+    r"\b(grande|grandi|piccol[aoie]|big|small|large|principale|intero|intera|full|schermo|"
+    r"in|a|al|alla|da|di|del|della|destra|sinistra|alto|basso|sopra|sotto|solo|sola|"
+    r"il|lo|la|le|i|gli|l)\b", re.IGNORECASE)
+
+_CAMERA_RE = re.compile(r"^(?:cam|camera|telecamera|videocamera|tele|webcam|telecam)(\d*)$")
+_SCOPIA_WORDS = {"scopia", "fluoro", "fluoroscopia", "live", "angio", "angiografo", "angiografia",
+                 "rx", "xray", "raggi", "scopie"}
+_SYNONYMS = {
+    "poligrafo": "poly", "polig": "poly", "poli": "poly", "emodinamica": "poly", "poly": "poly",
+    "ecografo": "eco", "eco": "eco", "echo": "eco", "ecografia": "eco", "ecoge": "eco",
+    "syncvision": "sync", "sync": "sync",
+}
+
+
+def _same_family(a: "Device", b: "Device") -> bool:
+    """Due profili dello stesso apparecchio condividono una parola del nome (es. 'Volcano')."""
+    wa = {w for w in re.findall(r"[a-z0-9]{3,}", a.name.lower())}
+    wb = {w for w in re.findall(r"[a-z0-9]{3,}", b.name.lower())}
+    return bool(wa & wb)
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[\s_\-\.']+", "", s.lower())
+
+
+def parse_view_text(project: Project, lib: List[Device], text: str) -> List[ViewItem]:
+    """Interpreta una descrizione libera della vista, es.
+    'Fluoro + IVUS + Cam1', 'cam e scopia', 'cam grande e live piccola', 'poligrafo, live, cam 2'.
+    La sorgente indicata come 'grande' (o, se nessuna lo è, la prima) va a destra."""
+    raw_parts = [p for p in _SEP_RE.split(text.strip()) if p and p.strip()]
+    if not raw_parts:
+        raise ValueError("Scrivi almeno una sorgente")
+
+    active = [a for a in project.areas if a.device and find_device(lib, a.device)]
+    dev_of = {a.index: find_device(lib, a.device) for a in active}
+    used = set()
+    parsed = []  # (is_big, ViewItem)
+
+    def free(pred):
+        return [a for a in active if a.index not in used and pred(a)]
+
+    for part in raw_parts:
+        big = bool(_BIG_RE.search(part))
+        token = _norm(_NOISE_RE.sub(" ", part))
+        if not token:
+            token = _norm(part)
+        item = None
+
+        # 1) etichetta dell'area (Cam1, Fluoro, IVUS, ...)
+        hit = free(lambda a: a.label and _norm(a.label) == token)
+        if hit:
+            item = ViewItem(hit[0].index)
+
+        # 2) telecamera, eventualmente numerata
+        if item is None:
+            m = _CAMERA_RE.match(token)
+            if m:
+                cams = [a for a in active if dev_of[a.index].is_camera]
+                if m.group(1):
+                    n = int(m.group(1))
+                    hit = [a for a in cams if _norm(a.label) == f"cam{n}" and a.index not in used]
+                    if not hit and 0 < n <= len(cams) and cams[n - 1].index not in used:
+                        hit = [cams[n - 1]]
+                else:
+                    hit = [a for a in cams if a.index not in used]
+                if not hit:
+                    raise ValueError(f"'{part.strip()}': nessuna telecamera libera nelle aree configurate")
+                item = ViewItem(hit[0].index)
+
+        # 3) scopia
+        if item is None and token in _SCOPIA_WORDS:
+            hit = free(lambda a: dev_of[a.index].kind == KIND_SCOPIA)
+            if not hit:
+                raise ValueError(f"'{part.strip()}': nessuna scopia nelle aree configurate")
+            item = ViewItem(hit[0].index)
+
+        # 4) dispositivi del catalogo (sigla, nome, sinonimi)
+        if item is None:
+            key = _SYNONYMS.get(token, token)
+            cands = [d for d in lib if not d.is_camera and
+                     (_norm(d.sigla) == key or _norm(d.name) == key)]
+            if not cands and len(key) >= 3:
+                cands = [d for d in lib if not d.is_camera and
+                         (_norm(d.sigla).startswith(key) or key in _norm(d.name))]
+            for d in cands:  # prima un'area che ha proprio quel dispositivo
+                hit = free(lambda a: a.device == d.name)
+                if hit:
+                    item = ViewItem(hit[0].index)
+                    break
+            if item is None:  # poi un'area dello stesso apparecchio (es. FFR Volcano sull'area IVUS Volcano)
+                for d in cands:
+                    hit = free(lambda a: not dev_of[a.index].is_camera
+                               and dev_of[a.index].resolution == d.resolution
+                               and dev_of[a.index].kind != KIND_SCOPIA
+                               and _same_family(dev_of[a.index], d))
+                    if hit:
+                        item = ViewItem(hit[0].index, d.name)
+                        break
+
+        if item is None:
+            raise ValueError(f"'{part.strip()}' non corrisponde a nessuna area configurata.\n"
+                             "Usa le etichette del tab Aree (es. Cam1, Fluoro), il nome o la sigla "
+                             "di un dispositivo, oppure parole come cam, scopia, live, poligrafo.")
+        used.add(item.area)
+        parsed.append((big, item))
+
+    if len(parsed) > 4:
+        raise ValueError("Massimo 4 sorgenti per vista")
+    if sum(1 for b, _ in parsed if b) > 1:
+        raise ValueError("Solo una sorgente può essere 'grande'")
+    parsed.sort(key=lambda t: not t[0])  # la sorgente 'grande' va per prima (a destra)
+    return [it for _, it in parsed]

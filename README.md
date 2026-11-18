@@ -21,17 +21,24 @@ si condivide il catalogo con i colleghi.
 1. **Aree (collegamenti)** – per ogni area: dispositivo, slot della scheda
    (es. `SLOTDEV_06BC USBMI_02`, `HD Video 1`, `SN:...`), commento, etichetta
    (Cam1, Cam2, Fluoro, IVUS…).
-2. **Viste** – scrivi la vista e premi Invio. La **prima** sorgente va grande a
-   destra, le altre in colonna a sinistra dall'alto verso il basso:
-   - `Fluoro + Poly + Cam1` → scopia grande a destra, poligrafo in alto, camera sotto
-   - `IVUS + Fluoro + Cam2` → IVUS grande a destra, scopia in alto a sinistra
-   - `Cam1` → camera a schermo intero (16:9)
-   - `FFR` usa l'area dell'IVUS con il rectangle dell'FFR (stessa risoluzione)
+   Cambiando dispositivo, commento ed etichetta compilati in automatico si
+   aggiornano; quelli modificati a mano restano.
+2. **Viste** – scrivi la vista e premi Invio. La sorgente indicata come
+   **grande** (oppure, se nessuna lo è, la **prima**) va a destra, le altre in
+   colonna a sinistra dall'alto verso il basso. Separatori: `+` `,` `e`.
+   - `Fluoro + Poly + Cam1`, `live, poligrafo, cam` → scopia grande a destra, poligrafo in alto, camera sotto
+   - `IVUS + Fluoro + Cam2`, `IVUS e scopia e cam 2` → IVUS grande a destra, scopia in alto a sinistra
+   - `cam grande e live piccola`, `cam e scopia` → camera grande a destra, scopia 600×600 a sinistra
+   - `Cam1`, `solo cam`, `camera 2` → camera a schermo intero (16:9)
+   - Parole riconosciute: scopia / fluoro / live / angio; cam / camera / telecamera (+ numero);
+     poly / poligrafo; eco / ecografo; oltre a etichette delle aree, nomi e sigle del catalogo.
+   - `FFR` usa l'area dell'IVUS Volcano con il rectangle dell'FFR (stesso apparecchio).
 
    L'anteprima mostra la disposizione e i valori calcolati.
 3. **Catalogo dispositivi** – aggiungi/modifica dispositivi (nome, sigla, tipo,
    risoluzione, rectangle). Viene salvato automaticamente.
-4. **File .ini** – testo generato, ritoccabile a mano, poi *Salva .ini…*.
+4. **File .ini** – testo generato, ritoccabile a mano, poi *Salva .ini…* oppure
+   *Copia negli appunti* (anche dalla barra in alto).
 
 *Apri .ini esistente…* carica un layout già fatto; i rectangle sconosciuti
 vengono aggiunti al catalogo.
