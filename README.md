@@ -68,9 +68,19 @@ si condivide il catalogo con i colleghi.
 *Apri .ini esistente…* carica un layout già fatto; i rectangle sconosciuti
 vengono aggiunti al catalogo.
 
+## Schermo Full HD o HD
+
+In alto, **Schermo OneView** sceglie se il layout è per uno schermo
+Full HD 1920×1080 o HD 1280×720; il pulsante **⇄ Converti** passa dall'uno
+all'altro. La conversione mantiene ordine e proporzioni di tutte le viste
+(anche quelle modificate a mano): cambiano solo i valori di `Layout`
+(×2/3 o ×3/2) e i rectangle delle telecamere, ricalcolati sullo spazio nuovo.
+I rectangle dei dispositivi non cambiano (dipendono dal segnale, non dallo schermo).
+Un `.ini` HD viene riconosciuto in apertura. *Nuovo* mantiene lo schermo scelto.
+
 ## Regole di calcolo
 
-- Schermo 1920×1080; slot 1 = in alto a sinistra, 2 = destra, 3+ = sotto a sinistra.
+- Schermo 1920×1080 (in HD tutto viene scalato a 1280×720); slot 1 = in alto a sinistra, 2 = destra, 3+ = sotto a sinistra.
 - Larghezza della sorgente a destra = 1080 × proporzioni del suo rectangle.
 - Altezza dei dispositivi in colonna = larghezza colonna ÷ proporzioni del rectangle.
 - Scopia in colonna mai sotto **600×600**; telecamera mai sotto **400 px** di altezza.

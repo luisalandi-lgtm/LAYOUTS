@@ -17,7 +17,8 @@ import sys
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Tuple
 
-SCREEN_W, SCREEN_H = 1920, 1080
+SCREEN_W, SCREEN_H = 1920, 1080   # i calcoli si fanno sempre in Full HD e poi si scalano
+SCREENS = {"Full HD 1920×1080": "1920x1080", "HD 1280×720": "1280x720"}
 MIN_SCOPIA = 600
 MIN_CAM_H = 400
 MIN_SLOT = 100   # dimensione minima di uno slot spostando i divisori a mano
@@ -180,6 +181,7 @@ class Project:
     audio: str = "VoiceMeeter Output"
     parse_mode: str = "censoringdinamico.dll,0"
     parse_mode_commented: str = "GeneraleParse.dll,0"
+    screen: str = "1920x1080"    # schermo OneView: "1920x1080" (Full HD) o "1280x720" (HD)
     areas: List[Area] = field(default_factory=lambda: [Area(i) for i in range(1, 6)])
     views: List[View] = field(default_factory=list)
 
@@ -218,6 +220,22 @@ class ViewResult:
     placements: List[Placement]                 # in ordine di slot
     warnings: List[str] = field(default_factory=list)
     info: List[str] = field(default_factory=list)   # note solo per l'anteprima (deformazioni)
+    slots_fhd: List[Tuple[int, int, int, int]] = field(default_factory=list)  # stessi slot in Full HD
+
+
+def screen_scale(project: "Project") -> float:
+    return parse_res(project.screen or "1920x1080")[0] / SCREEN_W
+
+
+def scale_slots(slots, k: float):
+    """Scala gli slot spostando i bordi, così restano contigui e senza buchi."""
+    if k == 1:
+        return [tuple(sl) for sl in slots]
+    out = []
+    for x, y, w, h in slots:
+        x0, y0, x1, y1 = ev(x * k), ev(y * k), ev((x + w) * k), ev((y + h) * k)
+        out.append((x0, y0, x1 - x0, y1 - y0))
+    return out
 
 
 def resolve_item(project: Project, lib: List[Device], item: ViewItem):
@@ -299,7 +317,8 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
             pl = Placement(a.index, 1, None, "16:9")
         else:
             pl = Placement(a.index, 1, rect_or_none(prof), "1:1")
-        return ViewResult([(0, 0, SCREEN_W, SCREEN_H)], [pl], warnings)
+        full = [(0, 0, SCREEN_W, SCREEN_H)]
+        return ViewResult(scale_slots(full, screen_scale(project)), [pl], warnings, [], full)
 
     # ---- sorgente grande a destra + colonna a sinistra
     right = resolved[0]
@@ -397,17 +416,20 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
         y += h
     slots = [col_slots[0], (L, 0, W, SCREEN_H)] + col_slots[1:]
 
+    k = screen_scale(project)
+    out_slots = scale_slots(slots, k)
     placements = []
     order = [col[0], right] + col[1:]
-    for slot_no, ((a, _, prof), s) in enumerate(zip(order, slots), start=1):
+    for slot_no, ((a, _, prof), s, so) in enumerate(zip(order, slots, out_slots), start=1):
         if prof.is_camera:
-            rect = camera_crop(s[2], s[3], prof.resolution)
+            rect = camera_crop(so[2], so[3], prof.resolution)
             if s[3] < MIN_CAM_H:
-                warnings.append(f"Telecamera (Area {a.index}) alta solo {s[3]} px")
+                warnings.append(f"Telecamera (Area {a.index}) alta solo {so[3]} px")
         else:
             rect = rect_or_none(prof)
             if prof.kind == KIND_SCOPIA and slot_no != 2 and min(s[2], s[3]) < MIN_SCOPIA:
-                warnings.append(f"Scopia (Area {a.index}) più piccola di {MIN_SCOPIA}x{MIN_SCOPIA}")
+                m = ev(MIN_SCOPIA * k)
+                warnings.append(f"Scopia (Area {a.index}) più piccola di {m}x{m}")
         placements.append(Placement(a.index, slot_no, rect, "1:1"))
 
     info = []
@@ -418,7 +440,7 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
         if abs(d) > 0.03:
             verso = "allargato" if d > 0 else "stretto"
             info.append(f"{item_name(project, lib, it)}: {verso} del {abs(d) * 100:.0f}% (proporzioni non rispettate)")
-    return ViewResult(slots, placements, warnings, info)
+    return ViewResult(out_slots, placements, warnings, info, slots)
 
 
 def rect_or_none(prof: Device) -> Optional[List[int]]:
@@ -497,20 +519,22 @@ def _keep_file_geometry(view: View, layout_str: str, project: Project, lib: List
         n = len(view.items)
         if n < 2 or len(vals) != 4 * n:
             return
-        slots = [tuple(vals[i:i + 4]) for i in range(0, len(vals), 4)]
-        auto = compute_view(project, lib, view).slots
+        file_slots = [tuple(vals[i:i + 4]) for i in range(0, len(vals), 4)]
+        if [tuple(x) for x in compute_view(project, lib, view).slots] == file_slots:
+            return  # coincide con il calcolo automatico (confronto nelle unità del file)
     except (ValueError, IndexError):
         return
-    if [tuple(x) for x in auto] == slots:
-        return
-    L = slots[0][2]
-    col = [slots[0]] + slots[2:]
-    if slots[1] != (L, 0, SCREEN_W - L, SCREEN_H) or any(c[0] != 0 or c[2] != L for c in col):
+    k = screen_scale(project)
+    sw, sh = ev(SCREEN_W * k), ev(SCREEN_H * k)
+    L = file_slots[0][2]
+    col = [file_slots[0]] + file_slots[2:]
+    if file_slots[1] != (L, 0, sw - L, sh) or any(c[0] != 0 or c[2] != L for c in col):
         return
     if any(col[i][1] + col[i][3] != col[i + 1][1] for i in range(len(col) - 1)):
         return
-    view.col_width = L
-    view.heights = [c[3] for c in col]
+    # misure manuali salvate in Full HD (i calcoli interni sono sempre in Full HD)
+    view.col_width = ev(L / k)
+    view.heights = [ev(c[3] / k) for c in col]
 
 
 # ----------------------------------------------------------------- import .ini
@@ -565,6 +589,18 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
         a.comment = src["__comments__"].get(f"area{a.index}", "")
 
     view_names = [v.strip() for v in secs.get("Views", {}).get("view", "").split(",") if v.strip()]
+    right_edge = 0
+    for sname, sec in secs.items():
+        for k, v in sec.items():
+            if sname.lower().startswith("view") and k.startswith("layout") and k[6:].isdigit():
+                try:
+                    nums = [int(x) for x in v.split(",")]
+                    right_edge = max(right_edge, max(nums[i] + nums[i + 2] for i in range(0, len(nums) - 3, 4)))
+                except ValueError:
+                    pass
+    if 0 < right_edge <= 1280:
+        p.screen = "1280x720"
+        notes.append("Layout per schermo HD 1280×720")
     for s in secs:
         if s.lower().startswith("view") and s not in view_names and s != "Views":
             view_names.append(s)

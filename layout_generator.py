@@ -21,7 +21,7 @@ class App(tk.Tk):
         self.geometry("1260x790")
         self.minsize(1100, 700)
         self.lib = E.load_library()
-        self.project = E.Project()
+        self.project = E.Project(screen=getattr(getattr(self, "project", None), "screen", "1920x1080"))
         self.cur_view = None
         self._loading = False
 
@@ -55,8 +55,42 @@ class App(tk.Tk):
         ttk.Button(bf, text="Apri .ini esistente…", command=self.import_ini).pack(side="left", padx=2)
         ttk.Button(bf, text="Salva .ini…", command=self.save_ini).pack(side="left", padx=2)
         ttk.Button(bf, text="Copia negli appunti", command=self.copy_ini).pack(side="left", padx=2)
+        sf = ttk.Frame(f)
+        sf.grid(row=1, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        ttk.Label(sf, text="Schermo OneView:", font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.v_screen = tk.StringVar(value=self.project.screen)
+        for label, res in E.SCREENS.items():
+            ttk.Radiobutton(sf, text=label, value=res, variable=self.v_screen,
+                            command=self._on_screen_change).pack(side="left", padx=(8, 0))
+        self.btn_convert = ttk.Button(sf, text="", command=self.toggle_screen)
+        self.btn_convert.pack(side="left", padx=(16, 0))
         self.lbl_status = ttk.Label(f, text="", foreground="#2e7d32")
         self.lbl_status.grid(row=1, column=6, sticky="e", padx=(12, 0))
+        self._update_convert_button()
+
+    def _update_convert_button(self):
+        hd = self.v_screen.get() == "1280x720"
+        self.btn_convert["text"] = "⇄ Converti in Full HD 1920×1080" if hd else "⇄ Converti in HD 1280×720"
+
+    def toggle_screen(self):
+        self.v_screen.set("1920x1080" if self.v_screen.get() == "1280x720" else "1280x720")
+        self._on_screen_change()
+
+    def _on_screen_change(self):
+        """Cambia lo schermo di destinazione: stessa disposizione e stesse proporzioni, valori riscalati."""
+        if self.project.screen == self.v_screen.get():
+            return
+        self.project.screen = self.v_screen.get()
+        self._update_convert_button()
+        nome = next(k for k, v in E.SCREENS.items() if v == self.project.screen)
+        self._status(f"✓ Layout convertito in {nome}")
+        self._draw_preview()
+        if self.nb.index(self.nb.select()) == 3:
+            self.regenerate()
+
+    def _status(self, text):
+        self.lbl_status["text"] = text
+        self.after(3500, lambda: self.lbl_status.configure(text=""))
 
     def _sync_header(self):
         self.project.name = self.v_name.get().strip()
@@ -371,14 +405,16 @@ class App(tk.Tk):
             a, _, prof = E.resolve_item(self.project, self.lib, it)
             names[a.index] = (E.item_name(self.project, self.lib, it), prof.kind)
         lines = []
-        for k, (pl, slot) in enumerate(zip(res.placements, res.slots)):
+        # il disegno usa le misure Full HD interne, i testi quelle dello schermo scelto
+        for k, (pl, slot, sf) in enumerate(zip(res.placements, res.slots, res.slots_fhd)):
             x, y, w, h = slot
+            fx, fy, fw, fh = sf
             nm, kind = names[pl.area]
             hl = highlight is not None and highlight == k
-            c.create_rectangle(x * SC, y * SC, (x + w) * SC, (y + h) * SC,
+            c.create_rectangle(fx * SC, fy * SC, (fx + fw) * SC, (fy + fh) * SC,
                                fill=KIND_COLORS.get(kind, "#666"),
                                outline="#ffd54a" if hl else "#111", width=4 if hl else 2)
-            c.create_text((x + w / 2) * SC, (y + h / 2) * SC, text=f"{nm}\n{w}×{h}",
+            c.create_text((fx + fw / 2) * SC, (fy + fh / 2) * SC, text=f"{nm}\n{w}×{h}",
                           fill="white", justify="center", font=("Segoe UI", 10, "bold"))
             rect = ",".join(map(str, pl.rect)) if pl.rect else "(intero)"
             lines.append(f"Slot {pl.slot} · Area{pl.area} {nm}\n  Layout    {x},{y},{w},{h}\n  Rectangle {rect}")
@@ -400,12 +436,12 @@ class App(tk.Tk):
         self.lbl_info["text"] = "\n".join("ℹ " + i for i in res.info)
 
     def _col_slots(self):
-        s = self._res.slots
+        s = self._res.slots_fhd
         return [s[0]] + list(s[2:])
 
     def _dividers(self):
         """Linee spostabili: ('v', x, y0, y1) tra colonna e destra, ('h', y, x0, x1, i) tra slot in colonna."""
-        if not self._res or len(self._res.slots) < 2:
+        if not self._res or len(self._res.slots_fhd) < 2:
             return []
         col = self._col_slots()
         L = col[0][2]
@@ -426,7 +462,7 @@ class App(tk.Tk):
         if not self._res:
             return None
         x, y = cx / SC, cy / SC
-        for k, (sx, sy, sw, sh) in enumerate(self._res.slots):
+        for k, (sx, sy, sw, sh) in enumerate(self._res.slots_fhd):
             if sx <= x < sx + sw and sy <= y < sy + sh:
                 return k
         return None
@@ -440,7 +476,7 @@ class App(tk.Tk):
         d = self._hit_divider(e.x, e.y)
         if d:
             self.canvas["cursor"] = "sb_h_double_arrow" if d[0] == "v" else "sb_v_double_arrow"
-        elif self._hit_slot(e.x, e.y) is not None and len(self._res.slots) > 1:
+        elif self._hit_slot(e.x, e.y) is not None and len(self._res.slots_fhd) > 1:
             self.canvas["cursor"] = "fleur"
         else:
             self.canvas["cursor"] = ""
@@ -454,7 +490,7 @@ class App(tk.Tk):
             self._drag = {"type": d[0], "div": d}
             return
         k = self._hit_slot(e.x, e.y)
-        if k is not None and len(self._res.slots) > 1:
+        if k is not None and len(self._res.slots_fhd) > 1:
             self._drag = {"type": "slot", "k": k, "xy": (e.x, e.y), "moved": False}
 
     def _cv_drag(self, e):
@@ -706,7 +742,7 @@ class App(tk.Tk):
     def new_project(self):
         if self.project.views and not messagebox.askyesno("Nuovo", "Scartare il layout corrente?"):
             return
-        self.project = E.Project()
+        self.project = E.Project(screen=getattr(getattr(self, "project", None), "screen", "1920x1080"))
         self._load_project_into_ui()
 
     def _load_project_into_ui(self):
@@ -714,6 +750,8 @@ class App(tk.Tk):
         self.v_name.set(self.project.name)
         self.v_audio.set(self.project.audio)
         self.v_parse.set(self.project.parse_mode)
+        self.v_screen.set(self.project.screen)
+        self._update_convert_button()
         for row, a in zip(self.area_rows, self.project.areas):
             row["dev"].set(a.device)
             d = E.find_device(self.lib, a.device)
@@ -761,8 +799,7 @@ class App(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(text)
         self.update()
-        self.lbl_status["text"] = "✓ Testo del layout copiato negli appunti"
-        self.after(3000, lambda: self.lbl_status.configure(text=""))
+        self._status("✓ Testo del layout copiato negli appunti")
 
     def save_ini(self):
         if self.nb.index(self.nb.select()) != 3:
