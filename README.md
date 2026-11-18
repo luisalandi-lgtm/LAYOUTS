@@ -62,6 +62,10 @@ si condivide il catalogo con i colleghi.
    L'anteprima mostra la disposizione e i valori calcolati.
 3. **Catalogo dispositivi** – aggiungi/modifica dispositivi (nome, sigla, tipo,
    risoluzione, rectangle). Viene salvato automaticamente.
+   Il campo **Righe in [Info]** contiene righe da aggiungere sotto `ParseMode=`
+   quando il dispositivo è assegnato a un'area (più righe separate da `;`,
+   `{area}` = numero dell'area). Ogni dispositivo con "OBSBOT" nel nome riceve
+   in automatico `PelcoCamera2Source=Y`.
 4. **File .ini** – testo generato, ritoccabile a mano, poi *Salva .ini…* oppure
    *Copia negli appunti* (anche dalla barra in alto).
 

@@ -62,6 +62,9 @@ class Device:
     kind: str            # dispositivo / scopia / camera
     resolution: str      # es. "1600x1200"
     rect: Optional[List[int]] = None  # x,y,w,h (None per le camere)
+    # righe da aggiungere in [Info] sotto ParseMode quando il dispositivo è usato,
+    # separate da ";" (es. "PelcoCamera2Source=Y"); {area} = numero dell'area
+    info_lines: str = ""
 
     @property
     def is_camera(self) -> bool:
@@ -90,6 +93,14 @@ DEFAULT_DEVICES = [
     Device("Camera 1080p", "CAM", KIND_CAMERA, "1920x1080", None),
     Device("Camera 720p", "CAM", KIND_CAMERA, "1280x720", None),
 ]
+
+
+OBSBOT_INFO = "PelcoCamera2Source=Y"
+
+
+def device_info_lines(d: "Device", area_index: int) -> List[str]:
+    return [ln.strip().replace("{area}", str(area_index))
+            for ln in (d.info_lines or "").replace("\n", ";").split(";") if ln.strip()]
 
 
 def app_dir() -> str:
@@ -122,7 +133,15 @@ def load_library() -> List[Device]:
     if os.path.exists(p):
         try:
             with open(p, encoding="utf-8") as f:
-                return [Device(**d) for d in json.load(f)]
+                lib = [Device(**d) for d in json.load(f)]
+            changed = False
+            for d in lib:
+                if "obsbot" in d.name.lower() and not d.info_lines:
+                    d.info_lines = OBSBOT_INFO
+                    changed = True
+            if changed:
+                save_library(lib)
+            return lib
         except (OSError, ValueError, TypeError):
             pass
     lib = [Device(**asdict(d)) for d in DEFAULT_DEVICES]
@@ -182,6 +201,7 @@ class Project:
     parse_mode: str = "censoringdinamico.dll,0"
     parse_mode_commented: str = "GeneraleParse.dll,0"
     screen: str = "1920x1080"    # schermo OneView: "1920x1080" (Full HD) o "1280x720" (HD)
+    extra_info: List[str] = field(default_factory=list)  # altre righe [Info] lette da un .ini
     areas: List[Area] = field(default_factory=lambda: [Area(i) for i in range(1, 6)])
     views: List[View] = field(default_factory=list)
 
@@ -461,6 +481,19 @@ def generate_ini(project: Project, lib: List[Device]) -> Tuple[str, List[str]]:
         out.append(f";ParseMode={project.parse_mode_commented}")
     if project.parse_mode:
         out.append(f"ParseMode={project.parse_mode}")
+    # le chiavi gestite da un dispositivo del catalogo compaiono solo se quel dispositivo è usato
+    managed = {ln.split("=", 1)[0].strip().lower() for d in lib for ln in device_info_lines(d, 0)}
+    extra = [ln for ln in project.extra_info if ln.split("=", 1)[0].strip().lower() not in managed]
+    for a in project.areas:
+        d = find_device(lib, a.device) if a.device else None
+        if d:
+            extra += device_info_lines(d, a.index)
+    seen = set()
+    for ln in extra:
+        key = ln.split("=", 1)[0].strip().lower()
+        if key not in seen:  # una sola riga per chiave (prima quella del file, poi dei dispositivi)
+            seen.add(key)
+            out.append(ln)
     out += ["", "[Sources]"]
 
     used = [a for a in project.areas if a.device]
@@ -564,10 +597,26 @@ def _parse_ini(text: str):
             k, v = line.split("=", 1)
             k = k.strip()
             sections[cur][k.lower()] = v.strip()
+            if cur == "Info" and k.lower() not in ("name", "audiosourcename", "parsemode"):
+                sections[cur].setdefault("__extra__", []).append(f"{k}={v.strip()}")
             if pending_comment:
                 sections[cur]["__comments__"][k.lower()] = pending_comment
             pending_comment = ""
     return sections, order
+
+
+def _match_camera(lib: List[Device], res: str, area: "Area", file_info: List[str]) -> Optional[Device]:
+    """Sceglie la telecamera del catalogo per un'area: quella nominata nel commento dell'area
+    (es. ";Minicam OBSBOT"), altrimenti la prima con la stessa risoluzione senza righe [Info]."""
+    cams = [d for d in lib if d.is_camera and d.resolution == res]
+    if not cams:
+        return None
+    comment = (area.comment or "").lower()
+    for d in cams:
+        if d.name.lower() in comment or (comment and comment in d.name.lower()):
+            return d
+    plain = [d for d in cams if not d.info_lines]
+    return (plain or cams)[0]
 
 
 def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
@@ -581,6 +630,7 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
         audio=info.get("audiosourcename", ""),
         parse_mode=info.get("parsemode", ""),
         parse_mode_commented=info.get("__parsemode_commented__", ""),
+        extra_info=list(info.get("__extra__", [])),
     )
     src = secs.get("Sources", {})
     resl = secs.get("Resolutions", {})
@@ -641,7 +691,7 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
             res = resl.get(f"resolution{ai}", "1920x1080")
             cam = is_cam_area(ai) or (ratio == "16:9" and rect is None)
             if cam:
-                dev = next((d for d in lib if d.is_camera and d.resolution == res), None)
+                dev = _match_camera(lib, res, a, p.extra_info)
                 if dev is None:
                     dev = Device(f"Camera {res}", "Cam", KIND_CAMERA, res, None)
                     lib.append(dev)

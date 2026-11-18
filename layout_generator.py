@@ -613,10 +613,11 @@ class App(tk.Tk):
         ttk.Label(t, text="Il catalogo viene salvato automaticamente e ricordato alle prossime aperture. "
                           "Aprendo un .ini esistente, i rectangle sconosciuti vengono aggiunti qui.",
                   foreground="#555").pack(anchor="w", pady=(0, 8))
-        cols = ("nome", "sigla", "tipo", "ris", "rect")
+        cols = ("nome", "sigla", "tipo", "ris", "rect", "info")
         self.tv = ttk.Treeview(t, columns=cols, show="headings", height=14)
-        for c, h, w in zip(cols, ["Nome", "Sigla", "Tipo", "Risoluzione", "Rectangle (x,y,w,h)"],
-                           [200, 90, 100, 110, 220]):
+        for c, h, w in zip(cols, ["Nome", "Sigla", "Tipo", "Risoluzione", "Rectangle (x,y,w,h)",
+                            "Righe in [Info]"],
+                           [190, 80, 95, 100, 180, 200]):
             self.tv.heading(c, text=h)
             self.tv.column(c, width=w, anchor="w")
         self.tv.pack(fill="both", expand=True)
@@ -624,7 +625,8 @@ class App(tk.Tk):
 
         f = ttk.LabelFrame(t, text="Dispositivo", padding=8)
         f.pack(fill="x", pady=8)
-        self.l_name, self.l_sigla, self.l_kind, self.l_res, self.l_rect = (tk.StringVar() for _ in range(5))
+        self.l_name, self.l_sigla, self.l_kind, self.l_res, self.l_rect, self.l_info = (
+            tk.StringVar() for _ in range(6))
         fields = [("Nome", self.l_name, 22), ("Sigla", self.l_sigla, 10), ("Risoluzione", self.l_res, 12),
                   ("Rectangle", self.l_rect, 22)]
         col = 0
@@ -636,6 +638,12 @@ class App(tk.Tk):
         ttk.Combobox(f, textvariable=self.l_kind, values=E.KINDS, state="readonly", width=12).grid(
             row=0, column=col + 1, padx=4)
         self.l_kind.set(E.KIND_DEVICE)
+        ttk.Label(f, text="Righe in [Info]").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(f, textvariable=self.l_info, width=60).grid(row=1, column=1, columnspan=5, sticky="w",
+                                                             padx=(4, 12), pady=(8, 0))
+        ttk.Label(f, text="aggiunte sotto ParseMode se il dispositivo è usato · più righe separate da ;  "
+                          "· {area} = numero dell'area", foreground="#777").grid(
+            row=1, column=6, columnspan=4, sticky="w", pady=(8, 0))
         bf = ttk.Frame(t)
         bf.pack(fill="x")
         ttk.Button(bf, text="Aggiungi / Aggiorna", command=self.lib_save).pack(side="left")
@@ -650,7 +658,8 @@ class App(tk.Tk):
         for d in self.lib:
             self.tv.insert("", "end", iid=d.name, values=(
                 d.name, d.sigla, d.kind, d.resolution,
-                "(calcolato)" if d.is_camera else (",".join(map(str, d.rect)) if d.rect else "(intero)")))
+                "(calcolato)" if d.is_camera else (",".join(map(str, d.rect)) if d.rect else "(intero)"),
+                d.info_lines))
         self._refresh_area_device_lists()
 
     def _lib_select(self):
@@ -663,6 +672,7 @@ class App(tk.Tk):
         self.l_kind.set(d.kind)
         self.l_res.set(d.resolution)
         self.l_rect.set(",".join(map(str, d.rect)) if d.rect else "")
+        self.l_info.set(d.info_lines)
 
     def lib_save(self):
         name = self.l_name.get().strip()
@@ -678,7 +688,10 @@ class App(tk.Tk):
         except ValueError as e:
             messagebox.showerror("Dati non validi", str(e))
             return
-        d = E.Device(name, self.l_sigla.get().strip() or name, kind, f"{rw}x{rh}", rect)
+        info = self.l_info.get().strip()
+        if not info and "obsbot" in name.lower():
+            info = E.OBSBOT_INFO
+        d = E.Device(name, self.l_sigla.get().strip() or name, kind, f"{rw}x{rh}", rect, info)
         old = E.find_device(self.lib, name)
         if old:
             self.lib[self.lib.index(old)] = d
