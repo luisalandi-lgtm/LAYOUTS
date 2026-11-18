@@ -77,16 +77,16 @@ class Device:
 
 
 DEFAULT_DEVICES = [
-    Device("Scopia", "Fluoro", KIND_SCOPIA, "1920x1080", [0, 32, 960, 960]),
-    Device("Poligrafo", "Poly", KIND_DEVICE, "1600x1200", [10, 290, 1556, 822]),
-    Device("Ecografo GE", "EcoGE", KIND_DEVICE, "1600x1200", [0, 64, 1600, 1136]),
+    Device("Scopia", "LIVE", KIND_SCOPIA, "1920x1080", [0, 32, 960, 960]),
+    Device("Poligrafo", "POLY", KIND_DEVICE, "1600x1200", [10, 290, 1556, 822]),
+    Device("Ecografo GE", "ECHO", KIND_DEVICE, "1600x1200", [0, 64, 1600, 1136]),
     Device("IVUS Volcano", "IVUS", KIND_DEVICE, "1280x1024", [14, 84, 1186, 866]),
     Device("FFR Volcano", "FFR", KIND_DEVICE, "1280x1024", [0, 78, 1280, 946]),
     Device("SyncVision", "SYNC", KIND_DEVICE, "1280x1024", None),
     Device("OCT", "OCT", KIND_DEVICE, "1280x1024", [0, 60, 1280, 964]),
     Device("IVUS Boston", "IVUS", KIND_DEVICE, "1920x1080", [316, 0, 1350, 1080]),
-    Device("Camera 1080p", "Cam", KIND_CAMERA, "1920x1080", None),
-    Device("Camera 720p", "Cam", KIND_CAMERA, "1280x720", None),
+    Device("Camera 1080p", "CAM", KIND_CAMERA, "1920x1080", None),
+    Device("Camera 720p", "CAM", KIND_CAMERA, "1280x720", None),
 ]
 
 
@@ -154,6 +154,7 @@ class Area:
 class ViewItem:
     area: int            # numero area
     profile: str = ""    # dispositivo del catalogo (vuoto = quello dell'area)
+    alias: str = ""      # nome forzato nella vista (es. "HEMO")
 
 
 @dataclass
@@ -231,13 +232,33 @@ def camera_crop(slot_w: int, slot_h: int, res: str) -> List[int]:
     return [0, fev((ch - h) / 2), w, h]
 
 
+def dev_class(d: Device) -> str:
+    """Nome standard del tipo di sorgente: LIVE, CAM, POLY, ECHO, IVUS, OCT, FFR, SYNC..."""
+    if d.is_camera:
+        return "CAM"
+    if d.kind == KIND_SCOPIA:
+        return "LIVE"
+    n = (d.name + " " + d.sigla).lower()
+    for rx, cls in [(r"\b(ffr|ifr)", "FFR"), (r"sync", "SYNC"), (r"\boct\b", "OCT"),
+                    (r"ivus|volcano|boston", "IVUS"), (r"poly|polig|hemo|emodin|maclab", "POLY"),
+                    (r"\beco|echo|ultras", "ECHO"), (r"scopia|fluoro|angio|live", "LIVE")]:
+        if re.search(rx, n):
+            return cls
+    return (d.sigla or d.name).upper()
+
+
 def item_name(project: Project, lib: List[Device], item: ViewItem) -> str:
     a, area_dev, prof = resolve_item(project, lib, item)
+    if item.alias:
+        return item.alias
     if prof.is_camera:
-        return a.label or f"Cam{a.index}"
-    if prof.name == area_dev.name and a.label:
-        return a.label
-    return prof.sigla or prof.name
+        cams = [x for x in project.areas
+                if x.device and find_device(lib, x.device) and find_device(lib, x.device).is_camera]
+        if len(cams) <= 1:
+            return "CAM"
+        num = re.sub(r"\D", "", a.label or "") or str([c.index for c in cams].index(a.index) + 1)
+        return f"CAM{num}"
+    return dev_class(prof)
 
 
 def auto_view_name(project: Project, lib: List[Device], view: View) -> str:
@@ -552,7 +573,7 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
                 if not a.label and not dev.is_camera:
                     a.label = part
             items.append(ViewItem(ai, "" if dev.name == a.device else dev.name))
-        p.views.append(View(vname, items))
+        p.views.append(View("", items))  # nomi standard (LIVE, CAM, POLY...) ricalcolati
 
     for a in p.areas:
         if (a.source or a.comment) and not a.device:
@@ -573,31 +594,47 @@ _NOISE_RE = re.compile(
     r"in|a|al|alla|da|di|del|della|destra|sinistra|alto|basso|sopra|sotto|solo|sola|"
     r"il|lo|la|le|i|gli|l)\b", re.IGNORECASE)
 
-_CAMERA_RE = re.compile(r"^(?:cam|camera|telecamera|videocamera|tele|webcam|telecam)(\d*)$")
-_SCOPIA_WORDS = {"scopia", "fluoro", "fluoroscopia", "live", "angio", "angiografo", "angiografia",
-                 "rx", "xray", "raggi", "scopie"}
-_SYNONYMS = {
-    "poligrafo": "poly", "polig": "poly", "poli": "poly", "emodinamica": "poly", "poly": "poly",
-    "ecografo": "eco", "eco": "eco", "echo": "eco", "ecografia": "eco", "ecoge": "eco",
-    "syncvision": "sync", "sync": "sync",
-}
+_CAMERA_RE = re.compile(r"^(?:cam|camera|cams|telecamera|videocamera|tele|webcam|telecam|room|sala)(\d*)$")
+
+# parola scritta (normalizzata) -> nome standard
+_WORD_CLASSES = [
+    (re.compile(r"^(scopia|scopie|fluoro\w*|live|angio\w*|x-?rays?|rx|raggi\w*|cathlab|radioscopia)$"), "LIVE"),
+    (re.compile(r"^(ffr|ifr|pressure|pressione)$"), "FFR"),
+    (re.compile(r"^(sync\w*)$"), "SYNC"),
+    (re.compile(r"^(oct|optis)$"), "OCT"),
+    (re.compile(r"^(ivus\w*|volcano\w*|boston\w*|philips\w*)$"), "IVUS"),
+    (re.compile(r"^(hemo\w*|haemo\w*|emo|emodinamic\w*)$"), "HEMO"),
+    (re.compile(r"^(poly\w*|polig\w*|poli|mac-?lab|monitor\w*)$"), "POLY"),
+    (re.compile(r"^(eco\w*|echo\w*|ultrasound\w*|ultrasuon\w*|us)$"), "ECHO"),
+]
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[\s_\.']+", "", s.lower())
+
+
+def word_class(token: str) -> Optional[str]:
+    t = _norm(token)
+    if _CAMERA_RE.match(t):
+        return "CAM"
+    for rx, cls in _WORD_CLASSES:
+        if rx.match(t):
+            return cls
+    return None
 
 
 def _same_family(a: "Device", b: "Device") -> bool:
     """Due profili dello stesso apparecchio condividono una parola del nome (es. 'Volcano')."""
-    wa = {w for w in re.findall(r"[a-z0-9]{3,}", a.name.lower())}
-    wb = {w for w in re.findall(r"[a-z0-9]{3,}", b.name.lower())}
+    wa = set(re.findall(r"[a-z0-9]{3,}", a.name.lower()))
+    wb = set(re.findall(r"[a-z0-9]{3,}", b.name.lower()))
     return bool(wa & wb)
-
-
-def _norm(s: str) -> str:
-    return re.sub(r"[\s_\-\.']+", "", s.lower())
 
 
 def parse_view_text(project: Project, lib: List[Device], text: str) -> List[ViewItem]:
     """Interpreta una descrizione libera della vista, es.
-    'Fluoro + IVUS + Cam1', 'cam e scopia', 'cam grande e live piccola', 'poligrafo, live, cam 2'.
-    La sorgente indicata come 'grande' (o, se nessuna lo è, la prima) va a destra."""
+    'Fluoro + IVUS + Cam1', 'cam e scopia', 'cam grande e live piccola', 'hemo, x-rays, cam 2'.
+    La sorgente indicata come 'grande' (o, se nessuna lo è, la prima) va a destra.
+    Nei nomi delle viste le sorgenti diventano LIVE, CAM, POLY/HEMO, ECHO, IVUS, OCT..."""
     raw_parts = [p for p in _SEP_RE.split(text.strip()) if p and p.strip()]
     if not raw_parts:
         raise ValueError("Scrivi almeno una sorgente")
@@ -612,66 +649,66 @@ def parse_view_text(project: Project, lib: List[Device], text: str) -> List[View
 
     for part in raw_parts:
         big = bool(_BIG_RE.search(part))
-        token = _norm(_NOISE_RE.sub(" ", part))
-        if not token:
-            token = _norm(part)
+        token = _norm(_NOISE_RE.sub(" ", part)) or _norm(part)
+        cls = word_class(token)
         item = None
 
-        # 1) etichetta dell'area (Cam1, Fluoro, IVUS, ...)
-        hit = free(lambda a: a.label and _norm(a.label) == token)
-        if hit:
+        # 1) telecamera, eventualmente numerata
+        if cls == "CAM":
+            num = _CAMERA_RE.match(token).group(1)
+            cams = [a for a in active if dev_of[a.index].is_camera]
+            if num:
+                n = int(num)
+                hit = [a for a in cams if a.index not in used and re.sub(r"\D", "", a.label) == num]
+                if not hit and 0 < n <= len(cams) and cams[n - 1].index not in used:
+                    hit = [cams[n - 1]]
+            else:
+                hit = [a for a in cams if a.index not in used]
+            if not hit:
+                raise ValueError(f"'{part.strip()}': nessuna telecamera libera nelle aree configurate")
             item = ViewItem(hit[0].index)
 
-        # 2) telecamera, eventualmente numerata
+        # 2) etichetta dell'area scritta esattamente
         if item is None:
-            m = _CAMERA_RE.match(token)
-            if m:
-                cams = [a for a in active if dev_of[a.index].is_camera]
-                if m.group(1):
-                    n = int(m.group(1))
-                    hit = [a for a in cams if _norm(a.label) == f"cam{n}" and a.index not in used]
-                    if not hit and 0 < n <= len(cams) and cams[n - 1].index not in used:
-                        hit = [cams[n - 1]]
-                else:
-                    hit = [a for a in cams if a.index not in used]
-                if not hit:
-                    raise ValueError(f"'{part.strip()}': nessuna telecamera libera nelle aree configurate")
+            hit = free(lambda a: a.label and _norm(a.label) == token)
+            if hit:
                 item = ViewItem(hit[0].index)
 
-        # 3) scopia
-        if item is None and token in _SCOPIA_WORDS:
-            hit = free(lambda a: dev_of[a.index].kind == KIND_SCOPIA)
-            if not hit:
-                raise ValueError(f"'{part.strip()}': nessuna scopia nelle aree configurate")
-            item = ViewItem(hit[0].index)
-
-        # 4) dispositivi del catalogo (sigla, nome, sinonimi)
-        if item is None:
-            key = _SYNONYMS.get(token, token)
-            cands = [d for d in lib if not d.is_camera and
-                     (_norm(d.sigla) == key or _norm(d.name) == key)]
-            if not cands and len(key) >= 3:
-                cands = [d for d in lib if not d.is_camera and
-                         (_norm(d.sigla).startswith(key) or key in _norm(d.name))]
-            for d in cands:  # prima un'area che ha proprio quel dispositivo
-                hit = free(lambda a: a.device == d.name)
-                if hit:
-                    item = ViewItem(hit[0].index)
-                    break
-            if item is None:  # poi un'area dello stesso apparecchio (es. FFR Volcano sull'area IVUS Volcano)
-                for d in cands:
+        # 3) tipo di dispositivo (LIVE, POLY/HEMO, ECHO, IVUS, OCT, FFR, SYNC)
+        if item is None and cls:
+            want = "POLY" if cls == "HEMO" else cls
+            hit = free(lambda a: dev_class(dev_of[a.index]) == want)
+            if hit:
+                item = ViewItem(hit[0].index)
+            else:  # profilo dello stesso apparecchio su un'altra area (es. FFR sull'area IVUS Volcano)
+                for d in [d for d in lib if dev_class(d) == want]:
                     hit = free(lambda a: not dev_of[a.index].is_camera
-                               and dev_of[a.index].resolution == d.resolution
                                and dev_of[a.index].kind != KIND_SCOPIA
+                               and dev_of[a.index].resolution == d.resolution
                                and _same_family(dev_of[a.index], d))
                     if hit:
                         item = ViewItem(hit[0].index, d.name)
                         break
+            if item is None:
+                raise ValueError(f"'{part.strip()}' ({cls}): nessuna area configurata con questo dispositivo")
+            if cls == "HEMO":
+                item.alias = "HEMO"
+
+        # 4) nome o sigla di un dispositivo del catalogo
+        if item is None:
+            cands = [d for d in lib if not d.is_camera and token in (_norm(d.sigla), _norm(d.name))]
+            if not cands and len(token) >= 3:
+                cands = [d for d in lib if not d.is_camera and token in _norm(d.name)]
+            for d in cands:
+                hit = free(lambda a: a.device == d.name)
+                if hit:
+                    item = ViewItem(hit[0].index)
+                    break
 
         if item is None:
             raise ValueError(f"'{part.strip()}' non corrisponde a nessuna area configurata.\n"
-                             "Usa le etichette del tab Aree (es. Cam1, Fluoro), il nome o la sigla "
-                             "di un dispositivo, oppure parole come cam, scopia, live, poligrafo.")
+                             "Usa parole come live, scopia, cam, poly, hemo, echo, ivus, oct, "
+                             "oppure le etichette del tab Aree.")
         used.add(item.area)
         parsed.append((big, item))
 

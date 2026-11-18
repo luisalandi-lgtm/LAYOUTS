@@ -108,8 +108,8 @@ class App(tk.Tk):
             n = 1 + sum(1 for j, r in enumerate(self.area_rows[:idx])
                         if (E.find_device(self.lib, r["dev"].get()) or d).is_camera
                         and E.find_device(self.lib, r["dev"].get()) is not None)
-            return d.name, f"Cam{n}"
-        return d.name, d.sigla
+            return d.name, f"CAM{n}"
+        return d.name, E.dev_class(d)
 
     def _on_area_device(self, idx):
         row = self.area_rows[idx]
@@ -151,8 +151,9 @@ class App(tk.Tk):
         e.bind("<Return>", lambda ev: self.quick_add())
         ttk.Button(q, text="Aggiungi", command=self.quick_add).pack(side="left")
         ttk.Label(t, text="La sorgente indicata come «grande» (oppure la prima) va a destra. Separatori: + , e    "
-                          "es.  Fluoro + IVUS + Cam1  ·  live, poligrafo, cam  ·  cam grande e live piccola  ·  "
-                          "IVUS e scopia e cam 2",
+                          "es.  live + ivus + cam  ·  x-rays, hemo, camera  ·  cam grande e live piccola  ·  "
+                          "echo e scopia e cam 2\n"
+                          "Nomi nelle viste: LIVE · CAM · POLY/HEMO · ECHO · IVUS · OCT · FFR · SYNC",
                   foreground="#777").pack(anchor="w", pady=(0, 10))
 
         body = ttk.Frame(t)
@@ -297,8 +298,10 @@ class App(tk.Tk):
             if idx is None:
                 continue
             a = self.project.area(idx)
-            prof = r["vp"].get()
-            items.append(E.ViewItem(idx, "" if prof == a.device else prof))
+            prof = "" if r["vp"].get() == a.device else r["vp"].get()
+            # il nome forzato (es. HEMO) resta finché la sorgente non cambia
+            alias = next((o.alias for o in v.items if o.area == idx and o.profile == prof), "")
+            items.append(E.ViewItem(idx, prof, alias))
         v.items = items
         sel = self.cur_view
         try:
@@ -369,7 +372,7 @@ class App(tk.Tk):
             return
         v = self.project.views[self.cur_view]
         self.project.views.insert(self.cur_view + 1,
-                                  E.View(v.name, [E.ViewItem(i.area, i.profile) for i in v.items]))
+                                  E.View(v.name, [E.ViewItem(i.area, i.profile, i.alias) for i in v.items]))
         self._refresh_view_list(self.cur_view + 1)
 
     def move_view(self, d):

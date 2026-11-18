@@ -26,13 +26,25 @@ si condivide il catalogo con i colleghi.
 2. **Viste** – scrivi la vista e premi Invio. La sorgente indicata come
    **grande** (oppure, se nessuna lo è, la **prima**) va a destra, le altre in
    colonna a sinistra dall'alto verso il basso. Separatori: `+` `,` `e`.
-   - `Fluoro + Poly + Cam1`, `live, poligrafo, cam` → scopia grande a destra, poligrafo in alto, camera sotto
-   - `IVUS + Fluoro + Cam2`, `IVUS e scopia e cam 2` → IVUS grande a destra, scopia in alto a sinistra
-   - `cam grande e live piccola`, `cam e scopia` → camera grande a destra, scopia 600×600 a sinistra
-   - `Cam1`, `solo cam`, `camera 2` → camera a schermo intero (16:9)
-   - Parole riconosciute: scopia / fluoro / live / angio; cam / camera / telecamera (+ numero);
-     poly / poligrafo; eco / ecografo; oltre a etichette delle aree, nomi e sigle del catalogo.
+   - `live, poligrafo, cam` → `LIVE + POLY + CAM`: scopia grande a destra, poligrafo in alto, camera sotto
+   - `IVUS e scopia e cam 2` → `IVUS + LIVE + CAM2`: IVUS grande a destra, scopia in alto a sinistra
+   - `cam grande e live piccola` → `CAM + LIVE`: camera grande a destra, scopia 600×600 a sinistra
+   - `solo cam`, `camera 2` → camera a schermo intero (16:9)
    - `FFR` usa l'area dell'IVUS Volcano con il rectangle dell'FFR (stesso apparecchio).
+
+   Nei nomi delle viste le sorgenti diventano sempre:
+
+   | Scrivi (maiuscole/minuscole indifferenti) | Nome nella vista |
+   |---|---|
+   | scopia, fluoro, live, angio, x-rays, xray, rx… | `LIVE` |
+   | cam, camera, telecamera (+ numero) | `CAM` (`CAM1`/`CAM2` se il layout ha due camere) |
+   | poly, poligrafo / hemo, emodinamica | `POLY` / `HEMO` |
+   | eco, ecografo, echo, ultrasound, ultrasuoni | `ECHO` |
+   | ivus, volcano, boston, philips | `IVUS` |
+   | oct | `OCT` |
+   | ffr, ifr / sync | `FFR` / `SYNC` |
+
+   Anche i layout aperti con *Apri .ini esistente…* prendono questi nomi.
 
    L'anteprima mostra la disposizione e i valori calcolati.
 3. **Catalogo dispositivi** – aggiungi/modifica dispositivi (nome, sigla, tipo,
