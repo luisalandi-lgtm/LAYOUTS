@@ -488,7 +488,7 @@ class App(tk.Tk):
 
     def _col_slots(self):
         s = self._res.slots_fhd
-        return [s[0]] + list(s[2:])
+        return list(s[:-1])   # colonna a sinistra; l'ultimo slot è quello grande a destra
 
     def _dividers(self):
         """Linee spostabili: ('v', x, y0, y1) tra colonna e destra, ('h', y, x0, x1, i) tra slot in colonna."""
@@ -520,10 +520,9 @@ class App(tk.Tk):
                 return k
         return None
 
-    @staticmethod
-    def _slot_to_item(k):
-        # slot 1 (k=0) = in alto a sinistra = items[1]; slot 2 (k=1) = destra = items[0]
-        return {0: 1, 1: 0}.get(k, k)
+    def _slot_to_item(self, k):
+        # slot in senso antiorario: 0..n-2 = colonna (items[1:]), ultimo = destra (items[0])
+        return 0 if k == len(self._res.slots_fhd) - 1 else k + 1
 
     def _cv_motion(self, e):
         d = self._hit_divider(e.x, e.y)

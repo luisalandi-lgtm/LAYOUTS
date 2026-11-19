@@ -480,18 +480,20 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
     if r_prof.kind == KIND_SCOPIA and abs(W - CH) > 2 and not view.is_manual:
         warnings.append(f"Scopia a destra non quadrata ({W}x{CH})")
 
-    # slot: 1 = in alto a sinistra, 2 = destra, 3.. = sotto a sinistra
+    # slot in senso antiorario: 1 = in alto a sinistra, poi in giù lungo la colonna,
+    # ultimo = grande a destra (es. 3 segnali: 1 alto sx, 2 basso sx, 3 destra)
     col_slots = []
     y = Y0 + y0
     for h in heights:
         col_slots.append((X0, y, L, h))
         y += h + G
-    slots = [col_slots[0], (X0 + L + G, Y0, W, CH)] + col_slots[1:]
+    slots = col_slots + [(X0 + L + G, Y0, W, CH)]
+    n_slots = len(slots)
 
     k = screen_scale(project)
     out_slots = scale_slots(slots, k)
     placements = []
-    order = [col[0], right] + col[1:]
+    order = list(col) + [right]
     for slot_no, ((a, _, prof), s, so) in enumerate(zip(order, slots, out_slots), start=1):
         if prof.is_camera:
             rect = camera_crop(so[2], so[3], prof.resolution)
@@ -499,13 +501,13 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
                 warnings.append(f"Telecamera (Area {a.index}) alta solo {so[3]} px")
         else:
             rect = rect_or_none(prof)
-            if prof.kind == KIND_SCOPIA and slot_no != 2 and min(s[2], s[3]) < MIN_SCOPIA:
+            if prof.kind == KIND_SCOPIA and slot_no != n_slots and min(s[2], s[3]) < MIN_SCOPIA:
                 m = ev(MIN_SCOPIA * k)
                 warnings.append(f"Scopia (Area {a.index}) più piccola di {m}x{m}")
         placements.append(Placement(a.index, slot_no, rect, "1:1"))
 
     info = []
-    for (a, _, prof), s, it in zip(order, slots, [items[1], items[0]] + list(items[2:])):
+    for (a, _, prof), s, it in zip(order, slots, list(items[1:]) + [items[0]]):
         if prof.is_camera:
             continue
         d = (s[2] / s[3]) / prof.aspect() - 1
@@ -619,7 +621,7 @@ def generate_ini(project: Project, lib: List[Device]) -> Tuple[str, List[str]]:
 def _keep_file_geometry(view: View, file_slots: List[tuple], project: Project, lib: List[Device]) -> None:
     """Se le misure del file sono diverse da quelle automatiche ma rappresentabili
     (colonna a sinistra + sorgente a destra), le conserva come impostazioni manuali.
-    file_slots è già nell'ordine del programma: [in alto a sinistra, destra, sotto...]."""
+    file_slots è già nell'ordine del programma: [colonna dall'alto in basso..., destra]."""
     n = len(view.items)
     if n < 2 or len(file_slots) != n:
         return
@@ -631,8 +633,8 @@ def _keep_file_geometry(view: View, file_slots: List[tuple], project: Project, l
     k = screen_scale(project)
     g = project.bg_frame if project.background else 0
     x0, L = file_slots[0][0], file_slots[0][2]
-    col = [file_slots[0]] + file_slots[2:]
-    if file_slots[1][0] < x0 + L or any(abs(c[0] - x0) > 2 or abs(c[2] - L) > 2 for c in col):
+    col = file_slots[:-1]
+    if file_slots[-1][0] < x0 + L or any(abs(c[0] - x0) > 2 or abs(c[2] - L) > 2 for c in col):
         return
     if any(abs(col[i][1] + col[i][3] + g - col[i + 1][1]) > 2 for i in range(len(col) - 1)):
         return
@@ -779,7 +781,7 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
                 big = max(range(n), key=lambda i: (geo[i][0], geo[i][3]))
                 rest = sorted((i for i in range(n) if i != big), key=lambda i: geo[i][1])
                 slot_order = [big + 1] + [i + 1 for i in rest]
-                file_slots = [geo[rest[0]], geo[big]] + [geo[i] for i in rest[1:]]
+                file_slots = [geo[i] for i in rest] + [geo[big]]
         except ValueError:
             pass
         raw_views.append((sec.get("name", vn).strip(), locs, slot_order, parts, file_slots))

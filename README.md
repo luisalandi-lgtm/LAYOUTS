@@ -105,7 +105,9 @@ viene riconosciuto e margine e cornice vengono letti dalle viste del file.
 
 ## Regole di calcolo
 
-- Schermo 1920×1080 (in HD tutto viene scalato a 1280×720); slot 1 = in alto a sinistra, 2 = destra, 3+ = sotto a sinistra.
+- Schermo 1920×1080 (in HD tutto viene scalato a 1280×720); slot numerati sempre in senso antiorario: 1 = in alto a sinistra, poi in giù lungo la colonna, l'ultimo = grande a destra
+  (3 segnali: 1 alto sx, 2 basso sx, 3 destra; 2 segnali: 1 sinistra, 2 destra). Anche i `Location`
+  sono scritti in quest'ordine. Aprendo un `.ini` con un'altra numerazione la posizione si riconosce dalle misure.
 - Larghezza della sorgente a destra = 1080 × proporzioni del suo rectangle.
 - Altezza dei dispositivi in colonna = larghezza colonna ÷ proporzioni del rectangle.
 - Scopia in colonna mai sotto **600×600**; telecamera mai sotto **400 px** di altezza.
