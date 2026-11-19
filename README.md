@@ -12,9 +12,31 @@ Scarica [`release/OneViewLayoutGenerator.exe`](release/OneViewLayoutGenerator.ex
 Non serve installare nulla. Al primo avvio Windows SmartScreen può mostrare
 "Windows ha protetto il PC": clic su *Ulteriori informazioni* → *Esegui comunque*.
 
-Accanto all'eseguibile viene creato `catalogo_dispositivi.json`, il catalogo dei
-dispositivi con risoluzioni e rectangle. Copiando insieme `.exe` e `.json`
+Accanto all'eseguibile viene creato `catalogo_dispositivi.ini`, il catalogo dei
+dispositivi con risoluzioni e rectangle. Copiando insieme `.exe` e `.ini`
 si condivide il catalogo con i colleghi.
+
+### Catalogo modificabile a mano
+
+Il catalogo è un file di testo nello stesso stile dei layout, apribile con il Blocco note
+(nel programma: tab *Catalogo dispositivi* → **Apri con Blocco note**):
+
+```ini
+[Poligrafo]
+Sigla=POLY
+Tipo=dispositivo
+Risoluzione=1600x1200
+Rectangle=10,290,1556,822
+RigheInfo=
+```
+
+- `Tipo`: `dispositivo`, `scopia` o `camera`; `Rectangle` vuoto = segnale intero (per le camere resta vuoto).
+- `RigheInfo`: righe da aggiungere in `[Info]` quando il dispositivo è usato (più righe separate da `;`
+  oppure ripetendo `RigheInfo=`).
+- Salvato il file, tornando al programma il catalogo si ricarica da solo (o con **Ricarica dal file**).
+- Se un dispositivo ha dati sbagliati il programma lo salta, indica la riga da correggere e salva
+  una copia del file com'era (`catalogo_dispositivi (copia con errori).ini`).
+- Il vecchio `catalogo_dispositivi.json` viene convertito in automatico al primo avvio.
 
 ## Uso
 

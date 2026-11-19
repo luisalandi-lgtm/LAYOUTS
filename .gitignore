@@ -1,5 +1,6 @@
 __pycache__/
 build/
 *.spec
-catalogo_dispositivi.json
+catalogo_dispositivi*.ini
+catalogo_dispositivi.json*
 /OneViewLayoutGenerator.exe

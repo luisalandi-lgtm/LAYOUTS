@@ -113,9 +113,29 @@ def app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+LIB_NAME = "catalogo_dispositivi.ini"
+OLD_LIB_NAME = "catalogo_dispositivi.json"   # formato delle versioni precedenti: convertito in automatico
+LIB_HEADER = """\
+; Catalogo dispositivi di OneView Layout Generator
+; Si può modificare anche con il Blocco note: il programma lo ricarica da solo.
+; Un dispositivo per sezione: [Nome del dispositivo]
+;   Sigla       = nome breve (LIVE, POLY, ECHO, IVUS, OCT, CAM...)
+;   Tipo        = dispositivo, scopia oppure camera
+;   Risoluzione = larghezza x altezza del segnale, es. 1920x1080
+;   Rectangle   = x,y,larghezza,altezza della parte utile del segnale
+;                 (vuoto = segnale intero; per le camere resta vuoto, viene calcolato)
+;   RigheInfo   = righe da aggiungere in [Info] quando il dispositivo è usato
+;                 (più righe separate da ; oppure ripetendo RigheInfo=; {area} = numero dell'area)
+; Le righe che iniziano con ; sono commenti.
+"""
+
+_known_mtime: Optional[float] = None   # ultima versione del file letta o scritta dal programma
+last_load_errors: List[str] = []       # problemi trovati nell'ultima lettura del file
+
+
 def library_path() -> str:
     """Catalogo accanto all'eseguibile; se la cartella non è scrivibile, in %APPDATA%."""
-    p = os.path.join(app_dir(), "catalogo_dispositivi.json")
+    p = os.path.join(app_dir(), LIB_NAME)
     try:
         if os.path.exists(p):
             with open(p, "a", encoding="utf-8"):
@@ -129,33 +149,154 @@ def library_path() -> str:
     except OSError:
         d = os.path.join(os.environ.get("APPDATA", app_dir()), "OneViewLayoutGenerator")
         os.makedirs(d, exist_ok=True)
-        return os.path.join(d, "catalogo_dispositivi.json")
+        return os.path.join(d, LIB_NAME)
+
+
+def library_to_text(lib: List[Device]) -> str:
+    out = [LIB_HEADER]
+    for d in lib:
+        out.append(f"[{d.name}]")
+        out.append(f"Sigla={d.sigla}")
+        out.append(f"Tipo={d.kind}")
+        out.append(f"Risoluzione={d.resolution}")
+        out.append("Rectangle=" + (",".join(map(str, d.rect)) if d.rect and not d.is_camera else ""))
+        out.append(f"RigheInfo={d.info_lines}")
+        out.append("")
+    return "\n".join(out)
+
+
+def library_from_text(text: str) -> Tuple[List[Device], List[str]]:
+    """Legge il catalogo in formato .ini. Restituisce (dispositivi, errori);
+    un dispositivo con dati non validi viene saltato e segnalato con il numero di riga."""
+    lib: List[Device] = []
+    errors: List[str] = []
+    cur = None   # [nome, riga, {chiave: valore}, [righe info]]
+    blocks = []
+    for no, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith(";") or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            cur = [line[1:-1].strip(), no, {}, []]
+            blocks.append(cur)
+            continue
+        if cur is None:
+            errors.append(f"Riga {no}: «{line}» fuori da una sezione [Nome]")
+            continue
+        if "=" not in line:
+            errors.append(f"Riga {no} ({cur[0]}): manca il segno = in «{line}»")
+            continue
+        k, v = (x.strip() for x in line.split("=", 1))
+        k = k.lower().replace(" ", "")
+        if k in ("righeinfo", "info"):
+            if v:
+                cur[3].append(v)
+        else:
+            cur[2][k] = v
+    kinds = {"dispositivo": KIND_DEVICE, "device": KIND_DEVICE, "scopia": KIND_SCOPIA,
+             "camera": KIND_CAMERA, "telecamera": KIND_CAMERA, "cam": KIND_CAMERA}
+    for name, no, kv, info in blocks:
+        where = f"[{name}] (riga {no})"
+        try:
+            if not name:
+                raise ValueError("nome vuoto")
+            if find_device(lib, name):
+                raise ValueError("nome già usato da un altro dispositivo")
+            kind = kinds.get(kv.get("tipo", "dispositivo").lower())
+            if kind is None:
+                raise ValueError(f"Tipo «{kv.get('tipo')}» non valido (dispositivo, scopia o camera)")
+            res = kv.get("risoluzione", "").lower().replace(" ", "")
+            try:
+                rw, rh = parse_res(res)
+            except ValueError:
+                raise ValueError(f"Risoluzione «{kv.get('risoluzione', '')}» non valida (es. 1920x1080)")
+            rect = None
+            if kind != KIND_CAMERA:
+                try:
+                    rect = parse_rect(kv.get("rectangle", ""))
+                except ValueError:
+                    raise ValueError(f"Rectangle «{kv.get('rectangle')}» non valido (x,y,larghezza,altezza)")
+                if rect and (rect[2] <= 0 or rect[3] <= 0 or rect[0] + rect[2] > rw or rect[1] + rect[3] > rh):
+                    raise ValueError(f"Rectangle {kv.get('rectangle')} esce dalla risoluzione {rw}x{rh}")
+            lib.append(Device(name, kv.get("sigla", "") or name, kind, f"{rw}x{rh}", rect, ";".join(info)))
+        except ValueError as e:
+            errors.append(f"{where}: {e} — dispositivo non caricato")
+    return lib, errors
+
+
+def _read_text(path: str) -> str:
+    with open(path, "rb") as f:
+        data = f.read()
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    for enc in ("utf-8", "cp1252"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def library_changed_outside() -> bool:
+    """True se il file del catalogo è stato modificato fuori dal programma."""
+    try:
+        return os.path.getmtime(library_path()) != _known_mtime
+    except OSError:
+        return False
 
 
 def load_library() -> List[Device]:
+    """Legge il catalogo. Se il file ha errori i dispositivi validi vengono caricati,
+    gli altri segnalati in last_load_errors e il file viene copiato per non perdere nulla."""
+    global _known_mtime, last_load_errors
+    last_load_errors = []
     p = library_path()
-    if os.path.exists(p):
+    if not os.path.exists(p):
+        old = os.path.join(os.path.dirname(p), OLD_LIB_NAME)
+        lib = None
+        if os.path.exists(old):   # conversione dal vecchio catalogo .json
+            try:
+                with open(old, encoding="utf-8") as f:
+                    lib = [Device(**d) for d in json.load(f)]
+                os.replace(old, old + ".vecchio")
+            except (OSError, ValueError, TypeError):
+                lib = None
+        if lib is None:
+            lib = [Device(**asdict(d)) for d in DEFAULT_DEVICES]
+        save_library(lib)
+        return lib
+    try:
+        text = _read_text(p)
+    except OSError as e:
+        last_load_errors = [f"Impossibile leggere {p}: {e}"]
+        return [Device(**asdict(d)) for d in DEFAULT_DEVICES]
+    lib, errors = library_from_text(text)
+    _known_mtime = os.path.getmtime(p)
+    if errors:
+        last_load_errors = errors
+        # copia del file così com'è: le correzioni fatte nel programma non fanno perdere i dati
         try:
-            with open(p, encoding="utf-8") as f:
-                lib = [Device(**d) for d in json.load(f)]
-            changed = False
-            for d in lib:
-                if "obsbot" in d.name.lower() and not d.info_lines:
-                    d.info_lines = OBSBOT_INFO
-                    changed = True
-            if changed:
-                save_library(lib)
-            return lib
-        except (OSError, ValueError, TypeError):
+            with open(os.path.splitext(p)[0] + " (copia con errori).ini", "w", encoding="utf-8-sig") as f:
+                f.write(text)
+        except OSError:
             pass
-    lib = [Device(**asdict(d)) for d in DEFAULT_DEVICES]
-    save_library(lib)
+        return lib
+    changed = False
+    for d in lib:
+        if "obsbot" in d.name.lower() and not d.info_lines:
+            d.info_lines = OBSBOT_INFO
+            changed = True
+    if changed:
+        save_library(lib)
     return lib
 
 
 def save_library(lib: List[Device]) -> None:
-    with open(library_path(), "w", encoding="utf-8") as f:
-        json.dump([asdict(d) for d in lib], f, indent=2, ensure_ascii=False)
+    global _known_mtime
+    p = library_path()
+    with open(p, "w", encoding="utf-8-sig", newline="\r\n") as f:
+        f.write(library_to_text(lib))
+    _known_mtime = os.path.getmtime(p)
 
 
 def find_device(lib: List[Device], name: str) -> Optional[Device]:

@@ -1,6 +1,7 @@
 """OneView Layout Generator - interfaccia grafica."""
 
 import os
+import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -34,6 +35,14 @@ class App(tk.Tk):
         self._build_output_tab()
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._on_tab())
         self._load_project_into_ui()
+        # tornando al programma dopo aver modificato il catalogo con il Blocco note
+        self.bind("<FocusIn>", lambda e: self._check_library_file() if e.widget is self else None)
+        if E.last_load_errors:
+            self.after(300, lambda: messagebox.showwarning(
+                "Catalogo", "Nel file del catalogo ci sono errori:\n\n"
+                + "\n".join("• " + e for e in E.last_load_errors)
+                + "\n\nCorreggili nel file (tab Catalogo dispositivi → Apri con Blocco note) e premi "
+                  "«Ricarica dal file»."))
 
     # ------------------------------------------------------------ header
     def _build_header(self):
@@ -704,8 +713,55 @@ class App(tk.Tk):
         ttk.Button(bf, text="Elimina", command=self.lib_delete).pack(side="left", padx=6)
         ttk.Label(bf, text="Rectangle vuoto = segnale intero. Per le telecamere il rectangle viene calcolato.",
                   foreground="#777").pack(side="left", padx=10)
-        ttk.Label(t, text="File catalogo: " + E.library_path(), foreground="#999").pack(anchor="w", pady=(8, 0))
+        ff = ttk.LabelFrame(t, text="File del catalogo (modificabile anche con il Blocco note)", padding=8)
+        ff.pack(fill="x", pady=(10, 0))
+        ttk.Button(ff, text="Apri con Blocco note", command=self.open_library_file).pack(side="left")
+        ttk.Button(ff, text="Apri cartella", command=self.open_library_folder).pack(side="left", padx=6)
+        ttk.Button(ff, text="Ricarica dal file", command=lambda: self.reload_library(True)).pack(side="left")
+        ttk.Label(ff, text=E.library_path(), foreground="#777").pack(side="left", padx=(12, 0))
         self._refresh_lib()
+
+    def open_library_file(self):
+        if E.library_changed_outside():
+            self.reload_library()
+        else:
+            E.save_library(self.lib)   # il file rispecchia il catalogo attuale
+        try:
+            subprocess.Popen(["notepad.exe", E.library_path()])
+        except OSError:
+            os.startfile(E.library_path())
+
+    def open_library_folder(self):
+        subprocess.Popen(["explorer", "/select,", E.library_path()])
+
+    def reload_library(self, manual=False):
+        """Rilegge il catalogo dal file (dopo una modifica fatta fuori dal programma)."""
+        self.lib = E.load_library()
+        sel = self.tv.selection()
+        self._refresh_lib()
+        if sel and E.find_device(self.lib, sel[0]):
+            self.tv.selection_set(sel[0])
+        missing = sorted({a.device for a in self.project.areas
+                          if a.device and not E.find_device(self.lib, a.device)})
+        self._draw_preview()
+        if self.nb.index(self.nb.select()) == 3:
+            self.regenerate()
+        if E.last_load_errors:
+            messagebox.showwarning(
+                "Catalogo", "Nel file del catalogo ci sono errori:\n\n"
+                + "\n".join("• " + e for e in E.last_load_errors)
+                + "\n\nCorreggili nel file e premi «Ricarica dal file». "
+                  "Una copia del file così com'era è stata salvata come «… (copia con errori).ini».")
+        elif missing:
+            messagebox.showwarning("Catalogo", "Dispositivi usati nelle aree ma non più nel catalogo:\n"
+                                   + "\n".join("• " + m for m in missing))
+        else:
+            self._status(f"✓ Catalogo ricaricato dal file ({len(self.lib)} dispositivi)")
+
+    def _check_library_file(self):
+        # modifiche fatte con il Blocco note: ricarica quando si torna al programma
+        if E.library_changed_outside():
+            self.reload_library()
 
     def _refresh_lib(self):
         self.tv.delete(*self.tv.get_children())
@@ -798,6 +854,7 @@ class App(tk.Tk):
         return warns
 
     def _on_tab(self):
+        self._check_library_file()
         idx = self.nb.index(self.nb.select())
         self._areas_to_project()
         if idx == 1:
