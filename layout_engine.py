@@ -22,6 +22,10 @@ SCREENS = {"Full HD 1920×1080": "1920x1080", "HD 1280×720": "1280x720"}
 MIN_SCOPIA = 600
 MIN_CAM_H = 400
 MIN_SLOT = 100   # dimensione minima di uno slot spostando i divisori a mano
+MIN_CAM_H_BG = 250   # con lo sfondo la cornice toglie spazio: la telecamera può scendere fino a qui
+# cornice con lo sfondo, nelle unità dello schermo: (margine alto, cornice lati/basso/tra i segnali)
+BG_DEFAULTS = {"1920x1080": (80, 30), "1280x720": (50, 20)}
+BG_FILE = "Sfondo.png"
 
 KIND_CAMERA = "camera"
 KIND_SCOPIA = "scopia"
@@ -201,6 +205,10 @@ class Project:
     parse_mode: str = "GeneraleParse.dll,0"   # i dispositivi possono sostituirlo (es. censoringdinamico)
     parse_mode_commented: str = ""
     screen: str = "1920x1080"    # schermo OneView: "1920x1080" (Full HD) o "1280x720" (HD)
+    background: bool = False     # sfondo: riga BackgroundBitMap + segnali separati da una cornice
+    background_file: str = BG_FILE
+    bg_top: int = 80             # margine alto (unità dello schermo scelto)
+    bg_frame: int = 30           # cornice lati/basso e spazio tra i segnali
     extra_info: List[str] = field(default_factory=list)  # altre righe [Info] lette da un .ini
     areas: List[Area] = field(default_factory=lambda: [Area(i) for i in range(1, 6)])
     views: List[View] = field(default_factory=list)
@@ -245,6 +253,42 @@ class ViewResult:
 
 def screen_scale(project: "Project") -> float:
     return parse_res(project.screen or "1920x1080")[0] / SCREEN_W
+
+
+def frame_box(project: "Project"):
+    """Spazio utile in Full HD: (x0, y0, larghezza, altezza, spazio tra i segnali).
+    Senza sfondo è lo schermo intero; con lo sfondo si tolgono margine alto e cornice."""
+    if not project.background:
+        return 0, 0, SCREEN_W, SCREEN_H, 0
+    k = screen_scale(project)
+    top = int(round(max(0, project.bg_top) / k))
+    fr = int(round(max(0, project.bg_frame) / k))
+    return fr, top, SCREEN_W - 2 * fr, SCREEN_H - top - fr, fr
+
+
+def convert_frame(project: "Project", new_screen: str) -> None:
+    """Passando da Full HD a HD (o viceversa) la cornice segue lo schermo: i valori
+    predefiniti diventano quelli dell'altro schermo, quelli personalizzati si riscalano."""
+    old = BG_DEFAULTS.get(project.screen)
+    new = BG_DEFAULTS.get(new_screen)
+    ox, oy, ocw, och, og = frame_box(project)
+    if old and new and (project.bg_top, project.bg_frame) == old:
+        project.bg_top, project.bg_frame = new
+    else:
+        k = parse_res(new_screen)[0] / parse_res(project.screen)[0]
+        project.bg_top, project.bg_frame = int(round(project.bg_top * k)), int(round(project.bg_frame * k))
+    project.screen = new_screen
+    # le misure fissate a mano seguono lo spazio utile (che può cambiare di qualche pixel)
+    nx, ny, ncw, nch, ng = frame_box(project)
+    for v in project.views:
+        if v.col_width and ocw - og > 0:
+            v.col_width = ev(v.col_width * (ncw - ng) / (ocw - og))
+        m = len(v.heights)
+        oc, nc = och - og * (m - 1), nch - ng * (m - 1)
+        if m and oc > 0 and oc != nc:
+            total = int(round(sum(v.heights) * nc / oc))
+            hs = [ev(h * nc / oc) for h in v.heights[:-1]]
+            v.heights = hs + [total - sum(hs)]
 
 
 def scale_slots(slots, k: float):
@@ -329,38 +373,46 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
 
     resolved = [resolve_item(project, lib, it) for it in items]
     warnings: List[str] = []
+    # spazio utile (con lo sfondo: dentro la cornice) e spazio tra i segnali
+    X0, Y0, CW, CH, G = frame_box(project)
 
-    # ---- vista singola: schermo intero
+    # ---- vista singola: schermo intero (con lo sfondo: tutto lo spazio dentro la cornice)
     if n == 1:
         a, _, prof = resolved[0]
         if prof.is_camera:
             pl = Placement(a.index, 1, None, "16:9")
         else:
             pl = Placement(a.index, 1, rect_or_none(prof), "1:1")
-        full = [(0, 0, SCREEN_W, SCREEN_H)]
+        full = [(X0, Y0, CW, CH)]
+        if prof.is_camera and project.background:
+            # camera 16:9 centrata nello spazio dentro la cornice
+            w, h = (ev(CH * 16 / 9), CH) if CW / CH > 16 / 9 else (CW, ev(CW * 9 / 16))
+            full = [(X0 + int(round((CW - w) / 2)), Y0 + int(round((CH - h) / 2)), w, h)]
         return ViewResult(scale_slots(full, screen_scale(project)), [pl], warnings, [], full)
 
     # ---- sorgente grande a destra + colonna a sinistra
     right = resolved[0]
     col = resolved[1:]
     r_prof = right[2]
+    colH = CH - G * (len(col) - 1)   # altezza della colonna senza gli spazi tra i segnali
 
     col_has_scopia = any(p.kind == KIND_SCOPIA for _, _, p in col)
     if r_prof.is_camera:
         # camera grande a destra: la colonna è larga quanto serve (scopia 600x600)
-        L = MIN_SCOPIA if col_has_scopia else SCREEN_W - SCREEN_H
+        L = MIN_SCOPIA if col_has_scopia else CW - G - CH
     else:
-        L = ev(SCREEN_W - SCREEN_H * r_prof.aspect())
+        L = ev(CW - G - CH * r_prof.aspect())
 
     if col_has_scopia and L < MIN_SCOPIA:
         L = MIN_SCOPIA
-    L = max(200, min(L, SCREEN_W - 400))
+    L = max(200, min(L, CW - G - 400))
     manual_w = bool(view.col_width)
     if manual_w:
-        L = max(MIN_SLOT, min(ev(view.col_width), SCREEN_W - MIN_SLOT))
+        L = max(MIN_SLOT, min(ev(view.col_width), CW - G - MIN_SLOT))
 
     ncam = sum(1 for _, _, p in col if p.is_camera)
-    avail = SCREEN_H - MIN_CAM_H * ncam if ncam else SCREEN_H
+    cam_min = MIN_CAM_H_BG if project.background else MIN_CAM_H
+    avail = colH - cam_min * ncam if ncam else colH
 
     def fixed_heights(width):
         return [None if p.is_camera else width / p.aspect() for _, _, p in col]
@@ -373,7 +425,7 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
             k = avail / tot
             hs = [None if h is None else h * k for h in hs]
             warnings.append("Dispositivo in colonna compresso in altezza per lasciare "
-                            f"almeno {MIN_CAM_H} px alla telecamera")
+                            f"almeno {ev(cam_min * screen_scale(project))} px alla telecamera")
         else:
             # dispositivo grande a destra: si restringe la colonna mantenendo le proporzioni
             newL = ev(L * avail / tot)
@@ -388,14 +440,14 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
         # senza telecamere in colonna: le proporzioni si mantengono e la colonna
         # viene centrata in verticale; si comprime solo se non entra nello schermo
         tot = sum(hs)
-        if tot > SCREEN_H:
-            k = SCREEN_H / tot
+        if tot > colH:
+            k = colH / tot
             hs = [h * k for h in hs]
             warnings.append("Dispositivi in colonna compressi in altezza per stare nello schermo")
 
     # altezze intere pari; le telecamere si dividono lo spazio rimanente
     fixed = [None if h is None else fev(h) for h in hs]
-    rem = SCREEN_H - sum(h for h in fixed if h is not None)
+    rem = colH - sum(h for h in fixed if h is not None)
     heights: List[int] = []
     cams_left = ncam
     for h in fixed:
@@ -408,7 +460,7 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
             heights.append(h)
     y0 = 0
     if not ncam:
-        gap = SCREEN_H - sum(heights)
+        gap = colH - sum(heights)
         if gap > 0:
             y0 = fev(gap / 2)
         else:
@@ -417,24 +469,24 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
     if view.heights and len(view.heights) == len(col):
         heights = [max(MIN_SLOT, ev(h)) for h in view.heights]
         tot = sum(heights)
-        if tot > SCREEN_H:
-            heights[-1] = max(MIN_SLOT, heights[-1] - (tot - SCREEN_H))
+        if tot > colH:
+            heights[-1] = max(MIN_SLOT, heights[-1] - (tot - colH))
             tot = sum(heights)
-        y0 = fev((SCREEN_H - tot) / 2) if tot < SCREEN_H else 0
+        y0 = fev((colH - tot) / 2) if tot < colH else 0
     elif ncam and manual_w:
         pass  # altezze automatiche sulla nuova larghezza
 
-    W = SCREEN_W - L
-    if r_prof.kind == KIND_SCOPIA and W != SCREEN_H and not view.is_manual:
-        warnings.append(f"Scopia a destra non quadrata ({W}x{SCREEN_H})")
+    W = CW - G - L
+    if r_prof.kind == KIND_SCOPIA and abs(W - CH) > 2 and not view.is_manual:
+        warnings.append(f"Scopia a destra non quadrata ({W}x{CH})")
 
     # slot: 1 = in alto a sinistra, 2 = destra, 3.. = sotto a sinistra
     col_slots = []
-    y = y0
+    y = Y0 + y0
     for h in heights:
-        col_slots.append((0, y, L, h))
-        y += h
-    slots = [col_slots[0], (L, 0, W, SCREEN_H)] + col_slots[1:]
+        col_slots.append((X0, y, L, h))
+        y += h + G
+    slots = [col_slots[0], (X0 + L + G, Y0, W, CH)] + col_slots[1:]
 
     k = screen_scale(project)
     out_slots = scale_slots(slots, k)
@@ -443,7 +495,7 @@ def compute_view(project: Project, lib: List[Device], view: View) -> ViewResult:
     for slot_no, ((a, _, prof), s, so) in enumerate(zip(order, slots, out_slots), start=1):
         if prof.is_camera:
             rect = camera_crop(so[2], so[3], prof.resolution)
-            if s[3] < MIN_CAM_H:
+            if s[3] < cam_min - 1:
                 warnings.append(f"Telecamera (Area {a.index}) alta solo {so[3]} px")
         else:
             rect = rect_or_none(prof)
@@ -477,6 +529,8 @@ def rect_or_none(prof: Device) -> Optional[List[int]]:
 def generate_ini(project: Project, lib: List[Device]) -> Tuple[str, List[str]]:
     warnings: List[str] = []
     out = ["[Info]", f"Name={project.name}", f"AudioSourceName={project.audio}"]
+    if project.background:
+        out.append(f"BackgroundBitMap='{project.background_file.strip().strip(chr(39)) or BG_FILE}'")
 
     def key(ln):
         return ln.split("=", 1)[0].strip().lower()
@@ -486,7 +540,7 @@ def generate_ini(project: Project, lib: List[Device]) -> Tuple[str, List[str]]:
 
     # le chiavi gestite da un dispositivo del catalogo compaiono solo se quel dispositivo è usato
     managed = {key(ln) for d in lib for ln in device_info_lines(d, 0)}
-    extra = [ln for ln in project.extra_info if key(ln) not in managed]
+    extra = [ln for ln in project.extra_info if key(ln) not in managed and key(ln) != "backgroundbitmap"]
     for a in project.areas:
         d = find_device(lib, a.device) if a.device else None
         if d:
@@ -562,26 +616,25 @@ def generate_ini(project: Project, lib: List[Device]) -> Tuple[str, List[str]]:
     return "\n".join(out).rstrip() + "\n", warnings
 
 
-def _keep_file_geometry(view: View, layout_str: str, project: Project, lib: List[Device]) -> None:
+def _keep_file_geometry(view: View, file_slots: List[tuple], project: Project, lib: List[Device]) -> None:
     """Se le misure del file sono diverse da quelle automatiche ma rappresentabili
-    (colonna a sinistra + sorgente a destra), le conserva come impostazioni manuali."""
+    (colonna a sinistra + sorgente a destra), le conserva come impostazioni manuali.
+    file_slots è già nell'ordine del programma: [in alto a sinistra, destra, sotto...]."""
+    n = len(view.items)
+    if n < 2 or len(file_slots) != n:
+        return
     try:
-        vals = [int(v) for v in layout_str.split(",")]
-        n = len(view.items)
-        if n < 2 or len(vals) != 4 * n:
-            return
-        file_slots = [tuple(vals[i:i + 4]) for i in range(0, len(vals), 4)]
         if [tuple(x) for x in compute_view(project, lib, view).slots] == file_slots:
             return  # coincide con il calcolo automatico (confronto nelle unità del file)
-    except (ValueError, IndexError):
+    except ValueError:
         return
     k = screen_scale(project)
-    sw, sh = ev(SCREEN_W * k), ev(SCREEN_H * k)
-    L = file_slots[0][2]
+    g = project.bg_frame if project.background else 0
+    x0, L = file_slots[0][0], file_slots[0][2]
     col = [file_slots[0]] + file_slots[2:]
-    if file_slots[1] != (L, 0, sw - L, sh) or any(c[0] != 0 or c[2] != L for c in col):
+    if file_slots[1][0] < x0 + L or any(abs(c[0] - x0) > 2 or abs(c[2] - L) > 2 for c in col):
         return
-    if any(col[i][1] + col[i][3] != col[i + 1][1] for i in range(len(col) - 1)):
+    if any(abs(col[i][1] + col[i][3] + g - col[i + 1][1]) > 2 for i in range(len(col) - 1)):
         return
     # misure manuali salvate in Full HD (i calcoli interni sono sempre in Full HD)
     view.col_width = ev(L / k)
@@ -669,6 +722,28 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
     if 0 < right_edge <= 1280:
         p.screen = "1280x720"
         notes.append("Layout per schermo HD 1280×720")
+    # sfondo: riga BackgroundBitMap; cornice dedotta dalle viste del file
+    bg = next((ln for ln in p.extra_info if ln.lower().startswith("backgroundbitmap=")), None)
+    if bg:
+        p.extra_info.remove(bg)
+        p.background = True
+        p.background_file = bg.split("=", 1)[1].strip().strip("'\"") or BG_FILE
+        p.bg_top, p.bg_frame = BG_DEFAULTS[p.screen]
+        xs, ys = [], []
+        for sname, sec in secs.items():
+            if not sname.lower().startswith("view"):
+                continue
+            for k, v in sec.items():
+                if k.startswith("layout") and k[6:].isdigit() and int(k[6:]) > 1:
+                    try:
+                        nums = [int(x) for x in v.split(",")]
+                    except ValueError:
+                        continue
+                    xs += nums[0::4]
+                    ys += nums[1::4]
+        if xs and ys and min(xs) > 0 and min(ys) > 0:
+            p.bg_top, p.bg_frame = min(ys), min(xs)
+        notes.append(f"Sfondo {p.background_file}: margine alto {p.bg_top}, cornice {p.bg_frame}")
     for s in secs:
         if s.lower().startswith("view") and s not in view_names and s != "Views":
             view_names.append(s)
@@ -694,11 +769,23 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
         n = len(locs)
         parts = [x.strip() for x in sec.get("name", "").split("+")]
         slot_order = [1] if n == 1 else [2, 1] + list(range(3, n + 1))
-        raw_views.append((sec.get("name", vn).strip(), locs, slot_order, parts,
-                          sec.get(f"layout{n}", "")))
+        file_slots = []
+        try:
+            vals = [int(x) for x in sec.get(f"layout{n}", "").split(",")]
+            if n > 1 and len(vals) == 4 * n:
+                geo = [tuple(vals[i:i + 4]) for i in range(0, len(vals), 4)]
+                # la sorgente grande è quella più a destra (a parità, la più alta);
+                # le altre formano la colonna dall'alto in basso, qualunque sia la numerazione del file
+                big = max(range(n), key=lambda i: (geo[i][0], geo[i][3]))
+                rest = sorted((i for i in range(n) if i != big), key=lambda i: geo[i][1])
+                slot_order = [big + 1] + [i + 1 for i in rest]
+                file_slots = [geo[rest[0]], geo[big]] + [geo[i] for i in rest[1:]]
+        except ValueError:
+            pass
+        raw_views.append((sec.get("name", vn).strip(), locs, slot_order, parts, file_slots))
 
     learned = []
-    for vname, locs, slot_order, parts, layout_str in raw_views:
+    for vname, locs, slot_order, parts, file_slots in raw_views:
         items = []
         for pos, slot in enumerate(slot_order):
             if slot not in locs:
@@ -722,7 +809,9 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
                 dev = next((d for d in lib if not d.is_camera and d.resolution == res
                             and d.effective_rect() == eff), None)
                 if dev is None:
-                    kind = KIND_SCOPIA if eff[2] == eff[3] else KIND_DEVICE
+                    words = re.findall(r"[\w-]+", f"{a.comment} {part}")
+                    is_live = eff[2] == eff[3] or any(word_class(w) == "LIVE" for w in words)
+                    kind = KIND_SCOPIA if is_live else KIND_DEVICE
                     base = (a.comment or part).strip() or f"Dispositivo Area{ai}"
                     nm, k = base, 2
                     while find_device(lib, nm):
@@ -737,7 +826,8 @@ def import_ini(text: str, lib: List[Device]) -> Tuple[Project, List[str]]:
                     a.label = part
             items.append(ViewItem(ai, "" if dev.name == a.device else dev.name))
         view = View("", items)  # nomi standard (LIVE, CAM, POLY...) ricalcolati
-        _keep_file_geometry(view, layout_str, p, lib)
+        if len(items) == len(file_slots):
+            _keep_file_geometry(view, file_slots, p, lib)
         p.views.append(view)
 
     for a in p.areas:

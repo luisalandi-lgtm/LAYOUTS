@@ -86,6 +86,23 @@ all'altro. La conversione mantiene ordine e proporzioni di tutte le viste
 I rectangle dei dispositivi non cambiano (dipendono dal segnale, non dallo schermo).
 Un `.ini` HD viene riconosciuto in apertura. *Nuovo* mantiene lo schermo scelto.
 
+## Sfondo
+
+Spuntando **Sfondo** (in alto, accanto allo schermo) il layout riceve in `[Info]`
+la riga `BackgroundBitMap='Sfondo.png'` (nome del file modificabile) e i segnali
+non occupano più tutto lo schermo: restano separati da una cornice in cui si vede lo sfondo.
+
+| Schermo | margine alto | cornice (lati, basso e tra i segnali) |
+|---|---|---|
+| Full HD 1920×1080 | 80 | 30 |
+| HD 1280×720 | 50 | 20 |
+
+I due valori si possono cambiare; con *⇄ Converti* passano a quelli dell'altro schermo.
+Con la sola camera, la camera 16:9 è centrata nello spazio dentro la cornice.
+Con lo sfondo la telecamera in colonna può scendere fino a 250 px (in Full HD),
+perché la cornice toglie spazio. Aprendo un `.ini` con `BackgroundBitMap` lo sfondo
+viene riconosciuto e margine e cornice vengono letti dalle viste del file.
+
 ## Regole di calcolo
 
 - Schermo 1920×1080 (in HD tutto viene scalato a 1280×720); slot 1 = in alto a sinistra, 2 = destra, 3+ = sotto a sinistra.

@@ -56,7 +56,7 @@ class App(tk.Tk):
         ttk.Button(bf, text="Salva .ini…", command=self.save_ini).pack(side="left", padx=2)
         ttk.Button(bf, text="Copia negli appunti", command=self.copy_ini).pack(side="left", padx=2)
         sf = ttk.Frame(f)
-        sf.grid(row=1, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        sf.grid(row=1, column=0, columnspan=7, sticky="ew", pady=(8, 0))
         ttk.Label(sf, text="Schermo OneView:", font=("Segoe UI", 9, "bold")).pack(side="left")
         self.v_screen = tk.StringVar(value=self.project.screen)
         for label, res in E.SCREENS.items():
@@ -64,8 +64,27 @@ class App(tk.Tk):
                             command=self._on_screen_change).pack(side="left", padx=(8, 0))
         self.btn_convert = ttk.Button(sf, text="", command=self.toggle_screen)
         self.btn_convert.pack(side="left", padx=(16, 0))
-        self.lbl_status = ttk.Label(f, text="", foreground="#2e7d32")
-        self.lbl_status.grid(row=1, column=6, sticky="e", padx=(12, 0))
+        # sfondo: riga BackgroundBitMap + segnali separati da una cornice
+        ttk.Separator(sf, orient="vertical").pack(side="left", fill="y", padx=14)
+        self.v_bg = tk.BooleanVar(value=self.project.background)
+        self.v_bg_file = tk.StringVar(value=self.project.background_file)
+        self.v_bg_top = tk.StringVar(value=str(self.project.bg_top))
+        self.v_bg_frame = tk.StringVar(value=str(self.project.bg_frame))
+        ttk.Checkbutton(sf, text="Sfondo", variable=self.v_bg,
+                        command=self._on_bg_change).pack(side="left")
+        self.bg_widgets = [ttk.Entry(sf, textvariable=self.v_bg_file, width=14)]
+        self.bg_widgets[0].pack(side="left", padx=(4, 0))
+        for text, var in (("margine alto", self.v_bg_top), ("cornice", self.v_bg_frame)):
+            ttk.Label(sf, text=text).pack(side="left", padx=(10, 2))
+            sp = ttk.Spinbox(sf, from_=0, to=300, increment=2, width=4, textvariable=var,
+                             command=self._on_bg_change)
+            sp.pack(side="left")
+            sp.bind("<KeyRelease>", lambda e: self._on_bg_change())
+            self.bg_widgets.append(sp)
+        self.bg_widgets[0].bind("<KeyRelease>", lambda e: self._on_bg_change())
+        self._update_bg_widgets()
+        self.lbl_status = ttk.Label(sf, text="", foreground="#2e7d32")
+        self.lbl_status.pack(side="right", padx=(12, 0))
         self._update_convert_button()
 
     def _update_convert_button(self):
@@ -80,10 +99,36 @@ class App(tk.Tk):
         """Cambia lo schermo di destinazione: stessa disposizione e stesse proporzioni, valori riscalati."""
         if self.project.screen == self.v_screen.get():
             return
-        self.project.screen = self.v_screen.get()
+        self._sync_bg()
+        E.convert_frame(self.project, self.v_screen.get())  # cambia schermo e adegua la cornice
+        self.v_bg_top.set(str(self.project.bg_top))
+        self.v_bg_frame.set(str(self.project.bg_frame))
         self._update_convert_button()
         nome = next(k for k, v in E.SCREENS.items() if v == self.project.screen)
         self._status(f"✓ Layout convertito in {nome}")
+        self._draw_preview()
+        if self.nb.index(self.nb.select()) == 3:
+            self.regenerate()
+
+    def _update_bg_widgets(self):
+        for w in self.bg_widgets:
+            w.state(["!disabled"] if self.v_bg.get() else ["disabled"])
+
+    def _sync_bg(self):
+        p = self.project
+        p.background = self.v_bg.get()
+        p.background_file = self.v_bg_file.get().strip() or E.BG_FILE
+        for attr, var in (("bg_top", self.v_bg_top), ("bg_frame", self.v_bg_frame)):
+            try:
+                setattr(p, attr, max(0, min(300, int(var.get()))))
+            except ValueError:
+                pass  # campo vuoto o in corso di scrittura: si tiene il valore precedente
+
+    def _on_bg_change(self):
+        if getattr(self, "_loading", False):
+            return
+        self._sync_bg()
+        self._update_bg_widgets()
         self._draw_preview()
         if self.nb.index(self.nb.select()) == 3:
             self.regenerate()
@@ -96,6 +141,7 @@ class App(tk.Tk):
         self.project.name = self.v_name.get().strip()
         self.project.audio = self.v_audio.get().strip()
         self.project.parse_mode = self.v_parse.get().strip()
+        self._sync_bg()
 
     # ------------------------------------------------------------ tab 1: aree
     def _build_areas_tab(self):
@@ -382,6 +428,11 @@ class App(tk.Tk):
     def _draw_preview(self, highlight=None):
         c = self.canvas
         c.delete("all")
+        if self.project.background:
+            # sfondo: si vede nella cornice attorno ai segnali
+            c.create_rectangle(0, 0, PW, PH, fill="#3b4f66", outline="")
+            c.create_text(8, 6, text=f"sfondo {self.project.background_file}", anchor="nw",
+                          fill="#b8c7d9", font=("Segoe UI", 8))
         self._res = None
         for lbl in (self.lbl_calc, self.lbl_warn, self.lbl_info, self.lbl_autoname, self.lbl_geom):
             lbl["text"] = ""
@@ -444,10 +495,12 @@ class App(tk.Tk):
         if not self._res or len(self._res.slots_fhd) < 2:
             return []
         col = self._col_slots()
+        X0, Y0, CW, CH, G = E.frame_box(self.project)
         L = col[0][2]
-        out = [("v", L, 0, E.SCREEN_H)]
+        # con la cornice le linee stanno a metà dello spazio tra i segnali
+        out = [("v", X0 + L + G / 2, Y0, Y0 + CH)]
         for i in range(len(col) - 1):
-            out.append(("h", col[i][1] + col[i][3], 0, L, i))
+            out.append(("h", col[i][1] + col[i][3] + G / 2, X0, X0 + L, i))
         return out
 
     def _hit_divider(self, cx, cy):
@@ -497,8 +550,9 @@ class App(tk.Tk):
         if not self._drag or self.cur_view is None:
             return
         v = self.project.views[self.cur_view]
+        X0, Y0, CW, CH, G = E.frame_box(self.project)
         if self._drag["type"] == "v":
-            v.col_width = max(E.MIN_SLOT, min(E.ev(e.x / SC), E.SCREEN_W - E.MIN_SLOT))
+            v.col_width = max(E.MIN_SLOT, min(E.ev(e.x / SC - X0 - G / 2), CW - G - E.MIN_SLOT))
             self._draw_preview()
         elif self._drag["type"] == "h":
             i = self._drag["div"][4]
@@ -507,9 +561,10 @@ class App(tk.Tk):
                 v.heights = [c[3] for c in col]
             top = col[i][1]
             bottom = col[i + 1][1] + col[i + 1][3]
-            y = max(top + E.MIN_SLOT, min(E.ev(e.y / SC), bottom - E.MIN_SLOT))
+            y = E.ev(e.y / SC - G / 2)   # nuovo bordo inferiore dello slot di sopra
+            y = max(top + E.MIN_SLOT, min(y, bottom - G - E.MIN_SLOT))
             v.heights[i] = y - top
-            v.heights[i + 1] = bottom - y
+            v.heights[i + 1] = bottom - (y + G)
             self._draw_preview()
         else:
             self._drag["xy"] = (e.x, e.y)
@@ -755,7 +810,11 @@ class App(tk.Tk):
     def new_project(self):
         if self.project.views and not messagebox.askyesno("Nuovo", "Scartare il layout corrente?"):
             return
-        self.project = E.Project(screen=getattr(getattr(self, "project", None), "screen", "1920x1080"))
+        old = self.project
+        # il nuovo layout mantiene schermo e impostazioni dello sfondo
+        self.project = E.Project(screen=old.screen, background=old.background,
+                                 background_file=old.background_file,
+                                 bg_top=old.bg_top, bg_frame=old.bg_frame)
         self._load_project_into_ui()
 
     def _load_project_into_ui(self):
@@ -765,6 +824,11 @@ class App(tk.Tk):
         self.v_parse.set(self.project.parse_mode)
         self.v_screen.set(self.project.screen)
         self._update_convert_button()
+        self.v_bg.set(self.project.background)
+        self.v_bg_file.set(self.project.background_file)
+        self.v_bg_top.set(str(self.project.bg_top))
+        self.v_bg_frame.set(str(self.project.bg_frame))
+        self._update_bg_widgets()
         for row, a in zip(self.area_rows, self.project.areas):
             row["dev"].set(a.device)
             d = E.find_device(self.lib, a.device)
