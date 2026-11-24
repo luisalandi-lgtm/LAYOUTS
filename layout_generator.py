@@ -37,6 +37,11 @@ class App(tk.Tk):
         self._load_project_into_ui()
         # tornando al programma dopo aver modificato il catalogo con il Blocco note
         self.bind("<FocusIn>", lambda e: self._check_library_file() if e.widget is self else None)
+        self.after(3000, self._poll_library)
+        if E.library_offline:
+            self.after(300, lambda: messagebox.showwarning(
+                "Catalogo", f"Il catalogo condiviso non è raggiungibile:\n{E.library_path()}\n\n"
+                            "Uso l'ultima copia letta. Appena torna disponibile viene ricaricato da solo."))
         if E.last_load_errors:
             self.after(300, lambda: messagebox.showwarning(
                 "Catalogo", "Nel file del catalogo ci sono errori:\n\n"
@@ -715,17 +720,89 @@ class App(tk.Tk):
                   foreground="#777").pack(side="left", padx=10)
         ff = ttk.LabelFrame(t, text="File del catalogo (modificabile anche con il Blocco note)", padding=8)
         ff.pack(fill="x", pady=(10, 0))
-        ttk.Button(ff, text="Apri con Blocco note", command=self.open_library_file).pack(side="left")
-        ttk.Button(ff, text="Apri cartella", command=self.open_library_folder).pack(side="left", padx=6)
-        ttk.Button(ff, text="Ricarica dal file", command=lambda: self.reload_library(True)).pack(side="left")
-        ttk.Label(ff, text=E.library_path(), foreground="#777").pack(side="left", padx=(12, 0))
+        r1 = ttk.Frame(ff)
+        r1.pack(fill="x")
+        ttk.Button(r1, text="Apri con Blocco note", command=self.open_library_file).pack(side="left")
+        ttk.Button(r1, text="Apri cartella", command=self.open_library_folder).pack(side="left", padx=6)
+        ttk.Button(r1, text="Ricarica dal file", command=lambda: self.reload_library(True)).pack(side="left")
+        ttk.Separator(r1, orient="vertical").pack(side="left", fill="y", padx=12)
+        ttk.Button(r1, text="Usa un catalogo condiviso…", command=self.choose_shared_library).pack(side="left")
+        self.btn_local = ttk.Button(r1, text="Torna al catalogo locale", command=self.use_local_library)
+        self.btn_local.pack(side="left", padx=6)
+        self.lbl_lib_src = ttk.Label(ff, text="", foreground="#555")
+        self.lbl_lib_src.pack(anchor="w", pady=(6, 0))
         self._refresh_lib()
+        self._update_lib_source()
+
+    def _update_lib_source(self):
+        p = E.library_path()
+        if E.is_shared():
+            src = E.shared_library_setting()[1]
+            txt = f"Catalogo CONDIVISO: {p}"
+            if src == "programma":
+                txt += "   (impostato da impostazioni.ini accanto al programma)"
+            if E.library_offline:
+                txt = f"⚠ Catalogo condiviso NON raggiungibile ({p}): uso l'ultima copia, le modifiche non si salvano"
+                self.lbl_lib_src.configure(foreground="#b25a00")
+            else:
+                self.lbl_lib_src.configure(foreground="#2e7d32")
+            self.btn_local.state(["!disabled"])
+        else:
+            txt = f"Catalogo locale (solo su questo PC): {p}"
+            self.lbl_lib_src.configure(foreground="#555")
+            self.btn_local.state(["disabled"])
+        self.lbl_lib_src["text"] = txt
+
+    def choose_shared_library(self):
+        messagebox.showinfo(
+            "Catalogo condiviso",
+            "Scegli il file del catalogo in una cartella condivisa da tutti "
+            "(cartella di rete, OneDrive/SharePoint, Google Drive...).\n\n"
+            "• Se il file esiste già, il programma userà quello.\n"
+            "• Se non esiste, viene creato con il catalogo attuale.")
+        path = filedialog.asksaveasfilename(
+            title="Catalogo condiviso", initialfile=E.LIB_NAME, defaultextension=".ini",
+            confirmoverwrite=False, filetypes=[("Catalogo dispositivi", "*.ini")])
+        if not path:
+            return
+        path = os.path.normpath(path)
+        current = list(self.lib)
+        existed = os.path.exists(path)
+        E.set_shared_library(path)
+        self.lib = E.load_library()   # se il file non c'è viene creato dal catalogo locale
+        if existed and not E.last_load_errors:
+            only_here = [d for d in current if not E.find_device(self.lib, d.name)]
+            if only_here and messagebox.askyesno(
+                    "Catalogo condiviso",
+                    "Questi dispositivi sono nel tuo catalogo ma non in quello condiviso:\n\n"
+                    + "\n".join("• " + d.name for d in only_here)
+                    + "\n\nAggiungerli al catalogo condiviso?"):
+                try:
+                    self.lib = E.modify_library(lambda lib: E.merge_devices(lib, only_here))
+                except (E.LibraryError, OSError) as e:
+                    messagebox.showerror("Catalogo non salvato", str(e))
+        self.reload_library(True)
+
+    def use_local_library(self):
+        if not messagebox.askyesno("Catalogo locale",
+                                   "Usare di nuovo il catalogo locale di questo PC?\n"
+                                   "Il catalogo condiviso resta dov'è, invariato."):
+            return
+        E.set_shared_library("")
+        self.reload_library(True)
+
+    def _poll_library(self):
+        # catalogo condiviso: si controlla spesso se qualcuno l'ha cambiato
+        try:
+            self._check_library_file()
+            if E.library_offline and os.path.exists(E.library_path()):
+                self.reload_library()   # la cartella condivisa è tornata raggiungibile
+        finally:
+            self.after(3000, self._poll_library)
 
     def open_library_file(self):
         if E.library_changed_outside():
             self.reload_library()
-        else:
-            E.save_library(self.lib)   # il file rispecchia il catalogo attuale
         try:
             subprocess.Popen(["notepad.exe", E.library_path()])
         except OSError:
@@ -739,6 +816,7 @@ class App(tk.Tk):
         self.lib = E.load_library()
         sel = self.tv.selection()
         self._refresh_lib()
+        self._update_lib_source()
         if sel and E.find_device(self.lib, sel[0]):
             self.tv.selection_set(sel[0])
         missing = sorted({a.device for a in self.project.areas
@@ -752,6 +830,11 @@ class App(tk.Tk):
                 + "\n".join("• " + e for e in E.last_load_errors)
                 + "\n\nCorreggili nel file e premi «Ricarica dal file». "
                   "Una copia del file così com'era è stata salvata come «… (copia con errori).ini».")
+        elif E.library_offline:
+            if manual:
+                messagebox.showwarning("Catalogo", "Il catalogo condiviso non è raggiungibile:\n"
+                                       f"{E.library_path()}\n\nUso l'ultima copia letta; "
+                                       "le modifiche al catalogo non si possono salvare finché non torna disponibile.")
         elif missing:
             messagebox.showwarning("Catalogo", "Dispositivi usati nelle aree ma non più nel catalogo:\n"
                                    + "\n".join("• " + m for m in missing))
@@ -802,14 +885,26 @@ class App(tk.Tk):
         if not info and "obsbot" in name.lower():
             info = E.OBSBOT_INFO
         d = E.Device(name, self.l_sigla.get().strip() or name, kind, f"{rw}x{rh}", rect, info)
-        old = E.find_device(self.lib, name)
-        if old:
-            self.lib[self.lib.index(old)] = d
-        else:
-            self.lib.append(d)
-        E.save_library(self.lib)
+
+        def change(lib):
+            old = E.find_device(lib, name)
+            if old:
+                lib[lib.index(old)] = d
+            else:
+                lib.append(d)
+        if self._save_lib_change(change):
+            self.tv.selection_set(name)
+
+    def _save_lib_change(self, change):
+        """Applica una modifica al catalogo rileggendo prima il file (condiviso o locale)."""
+        try:
+            self.lib = E.modify_library(change)
+        except (E.LibraryError, OSError) as e:
+            messagebox.showerror("Catalogo non salvato", str(e))
+            return False
         self._refresh_lib()
-        self.tv.selection_set(name)
+        self._update_lib_source()
+        return True
 
     def lib_delete(self):
         sel = self.tv.selection()
@@ -819,9 +914,8 @@ class App(tk.Tk):
             messagebox.showwarning("In uso", "Il dispositivo è assegnato a un'area del layout corrente.")
             return
         if messagebox.askyesno("Elimina", f"Eliminare '{sel[0]}' dal catalogo?"):
-            self.lib = [d for d in self.lib if d.name != sel[0]]
-            E.save_library(self.lib)
-            self._refresh_lib()
+            name = sel[0]
+            self._save_lib_change(lambda lib: lib.__setitem__(slice(None), [d for d in lib if d.name != name]))
 
     # ------------------------------------------------------------ tab 4: output
     def _build_output_tab(self):
@@ -911,11 +1005,16 @@ class App(tk.Tk):
                 text = f.read()
             n_before = len(self.lib)
             self.project, notes = E.import_ini(text, self.lib)
-            if len(self.lib) != n_before:
-                E.save_library(self.lib)
+            learned = self.lib[n_before:]
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("Errore", f"Impossibile leggere il file:\n{e}")
             return
+        if learned:
+            # i dispositivi nuovi si aggiungono al file senza toccare quelli modificati da altri
+            try:
+                self.lib = E.modify_library(lambda lib: E.merge_devices(lib, learned))
+            except (E.LibraryError, OSError) as e:
+                messagebox.showwarning("Catalogo", f"I dispositivi nuovi sono usati ma non salvati nel catalogo:\n{e}")
         self._load_project_into_ui()
         self.nb.select(0)
         msg = ("Layout caricato. Le misure del file sono state conservate (viste segnate con ✎);\n"

@@ -38,6 +38,32 @@ RigheInfo=
   una copia del file com'era (`catalogo_dispositivi (copia con errori).ini`).
 - Il vecchio `catalogo_dispositivi.json` viene convertito in automatico al primo avvio.
 
+### Catalogo condiviso tra più PC
+
+Il catalogo può stare in una cartella condivisa (cartella di rete, OneDrive/SharePoint,
+Google Drive per desktop...) ed essere usato da tutti:
+
+1. tab *Catalogo dispositivi* → **Usa un catalogo condiviso…** e scegli il file nella cartella condivisa
+   (se non esiste viene creato con il catalogo attuale; se esiste si usa quello, con la possibilità
+   di aggiungere i dispositivi che ci sono solo sul tuo PC);
+2. ogni collega fa lo stesso una volta, scegliendo lo stesso file.
+
+Oppure, per impostarlo per tutti in una volta, metti accanto a `OneViewLayoutGenerator.exe`
+un file `impostazioni.ini` con:
+
+```ini
+CatalogoCondiviso=\\server\cartella\catalogo_dispositivi.ini
+```
+
+- Il programma controlla il file ogni 3 secondi: le modifiche fatte da altri (dal programma o
+  con il Blocco note) compaiono da sole.
+- Salvando un dispositivo il programma rilegge prima il file e cambia solo quel dispositivo,
+  così le modifiche degli altri non vanno perse.
+- Se la cartella condivisa non è raggiungibile si usa l'ultima copia letta (le modifiche al catalogo
+  sono bloccate finché non torna disponibile, poi si ricarica da solo).
+- Se qualcuno lascia un errore nel file, il programma non lo sovrascrive e indica la riga da correggere.
+- **Torna al catalogo locale** riporta il PC al catalogo personale.
+
 ## Uso
 
 1. **Aree (collegamenti)** – per ogni area: dispositivo, slot della scheda

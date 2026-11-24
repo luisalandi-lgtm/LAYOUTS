@@ -4,3 +4,5 @@ build/
 catalogo_dispositivi*.ini
 catalogo_dispositivi.json*
 /OneViewLayoutGenerator.exe
+impostazioni.ini
+*.salvataggio

@@ -131,9 +131,69 @@ LIB_HEADER = """\
 
 _known_mtime: Optional[float] = None   # ultima versione del file letta o scritta dal programma
 last_load_errors: List[str] = []       # problemi trovati nell'ultima lettura del file
+library_offline = False                # catalogo condiviso non raggiungibile: si usa l'ultima copia
+
+
+class LibraryError(Exception):
+    """Il catalogo non si può salvare (file condiviso non raggiungibile o con errori)."""
+
+
+def user_dir() -> str:
+    d = os.path.join(os.environ.get("APPDATA", app_dir()), "OneViewLayoutGenerator")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+SETTINGS_NAME = "impostazioni.ini"
+
+
+def _read_settings(path: str) -> dict:
+    out = {}
+    try:
+        for line in _read_text(path).splitlines():
+            line = line.strip()
+            if "=" in line and not line.startswith((";", "#", "[")):
+                k, v = line.split("=", 1)
+                out[k.strip().lower()] = v.strip().strip('"')
+    except OSError:
+        pass
+    return out
+
+
+def shared_library_setting() -> Tuple[str, str]:
+    """Percorso del catalogo condiviso e da dove viene: impostazione dell'utente
+    (%APPDATA%) oppure impostazioni.ini accanto al programma (vale per tutti)."""
+    user = os.path.join(user_dir(), SETTINGS_NAME)
+    s = _read_settings(user)
+    if "catalogocondiviso" in s:   # anche vuoto: l'utente ha scelto il catalogo locale
+        return s["catalogocondiviso"], "utente"
+    s = _read_settings(os.path.join(app_dir(), SETTINGS_NAME))
+    return s.get("catalogocondiviso", ""), "programma"
+
+
+def set_shared_library(path: str) -> None:
+    """Imposta (o toglie, con path vuoto) il catalogo condiviso per questo utente."""
+    with open(os.path.join(user_dir(), SETTINGS_NAME), "w", encoding="utf-8-sig") as f:
+        f.write("; Impostazioni di OneView Layout Generator\n"
+                "; CatalogoCondiviso = percorso del catalogo dispositivi condiviso (vuoto = catalogo locale)\n"
+                f"CatalogoCondiviso={path}\n")
+
+
+def shared_library_path() -> str:
+    return shared_library_setting()[0]
+
+
+def cache_path() -> str:
+    """Ultima copia letta del catalogo condiviso, usata se la cartella condivisa non è raggiungibile."""
+    return os.path.join(user_dir(), "catalogo_condiviso (ultima copia).ini")
 
 
 def library_path() -> str:
+    """Il catalogo condiviso, se impostato; altrimenti quello locale."""
+    return shared_library_path() or local_library_path()
+
+
+def local_library_path() -> str:
     """Catalogo accanto all'eseguibile; se la cartella non è scrivibile, in %APPDATA%."""
     p = os.path.join(app_dir(), LIB_NAME)
     try:
@@ -238,65 +298,168 @@ def _read_text(path: str) -> str:
 
 
 def library_changed_outside() -> bool:
-    """True se il file del catalogo è stato modificato fuori dal programma."""
+    """True se il file del catalogo è stato modificato fuori dal programma
+    (o se il catalogo condiviso torna raggiungibile dopo essere stato offline)."""
     try:
         return os.path.getmtime(library_path()) != _known_mtime
     except OSError:
         return False
 
 
-def load_library() -> List[Device]:
-    """Legge il catalogo. Se il file ha errori i dispositivi validi vengono caricati,
-    gli altri segnalati in last_load_errors e il file viene copiato per non perdere nulla."""
-    global _known_mtime, last_load_errors
-    last_load_errors = []
-    p = library_path()
-    if not os.path.exists(p):
-        old = os.path.join(os.path.dirname(p), OLD_LIB_NAME)
-        lib = None
-        if os.path.exists(old):   # conversione dal vecchio catalogo .json
-            try:
-                with open(old, encoding="utf-8") as f:
-                    lib = [Device(**d) for d in json.load(f)]
-                os.replace(old, old + ".vecchio")
-            except (OSError, ValueError, TypeError):
-                lib = None
-        if lib is None:
-            lib = [Device(**asdict(d)) for d in DEFAULT_DEVICES]
-        save_library(lib)
-        return lib
-    try:
-        text = _read_text(p)
-    except OSError as e:
-        last_load_errors = [f"Impossibile leggere {p}: {e}"]
-        return [Device(**asdict(d)) for d in DEFAULT_DEVICES]
-    lib, errors = library_from_text(text)
-    _known_mtime = os.path.getmtime(p)
-    if errors:
-        last_load_errors = errors
-        # copia del file così com'è: le correzioni fatte nel programma non fanno perdere i dati
+def is_shared() -> bool:
+    return bool(shared_library_path())
+
+
+def _default_lib() -> List[Device]:
+    return [Device(**asdict(d)) for d in DEFAULT_DEVICES]
+
+
+def _load_local_or_default() -> List[Device]:
+    """Catalogo locale (con conversione dal vecchio .json), senza toccare quello condiviso."""
+    p = local_library_path()
+    if os.path.exists(p):
         try:
-            with open(os.path.splitext(p)[0] + " (copia con errori).ini", "w", encoding="utf-8-sig") as f:
-                f.write(text)
+            lib, errors = library_from_text(_read_text(p))
+            if lib:
+                return lib
         except OSError:
             pass
-        return lib
+    old = os.path.join(os.path.dirname(p), OLD_LIB_NAME)
+    if os.path.exists(old):   # conversione dal vecchio catalogo .json
+        try:
+            with open(old, encoding="utf-8") as f:
+                lib = [Device(**d) for d in json.load(f)]
+            _write(p, lib)
+            os.replace(old, old + ".vecchio")
+            return lib
+        except (OSError, ValueError, TypeError):
+            pass
+    return _default_lib()
+
+
+def _write(path: str, lib: List[Device]) -> None:
+    """Scrittura sicura: prima un file temporaneo, poi lo scambio (nessun file a metà)."""
+    tmp = path + ".salvataggio"
+    with open(tmp, "w", encoding="utf-8-sig", newline="\r\n") as f:
+        f.write(library_to_text(lib))
+    os.replace(tmp, path)
+
+
+def _fix_obsbot(lib: List[Device]) -> bool:
     changed = False
     for d in lib:
         if "obsbot" in d.name.lower() and not d.info_lines:
             d.info_lines = OBSBOT_INFO
             changed = True
-    if changed:
-        save_library(lib)
+    return changed
+
+
+def load_library() -> List[Device]:
+    """Legge il catalogo (condiviso o locale). Se il file ha errori i dispositivi validi
+    vengono caricati e gli altri segnalati in last_load_errors. Se il catalogo condiviso
+    non è raggiungibile si usa l'ultima copia letta (library_offline)."""
+    global _known_mtime, last_load_errors, library_offline
+    last_load_errors = []
+    library_offline = False
+    p = library_path()
+    shared = is_shared()
+    if not os.path.exists(p):
+        if shared and not os.path.isdir(os.path.dirname(p) or "."):
+            # cartella condivisa non raggiungibile (rete, OneDrive non sincronizzato...)
+            library_offline = True
+            _known_mtime = None
+            if os.path.exists(cache_path()):
+                lib, _ = library_from_text(_read_text(cache_path()))
+                return lib
+            return _load_local_or_default()
+        # primo avvio (o nuovo catalogo condiviso): si parte dal catalogo locale
+        lib = _load_local_or_default()
+        try:
+            save_library(lib)
+        except (OSError, LibraryError) as e:
+            last_load_errors = [f"Impossibile creare il catalogo {p}: {e}"]
+        return lib
+    try:
+        text = _read_text(p)
+    except OSError as e:
+        library_offline = shared
+        last_load_errors = [] if shared else [f"Impossibile leggere {p}: {e}"]
+        if shared and os.path.exists(cache_path()):
+            return library_from_text(_read_text(cache_path()))[0]
+        return _load_local_or_default()
+    lib, errors = library_from_text(text)
+    _known_mtime = os.path.getmtime(p)
+    if errors:
+        last_load_errors = errors
+        # copia del file così com'è, per non perdere nulla
+        try:
+            dest = os.path.join(user_dir() if shared else os.path.dirname(p),
+                                os.path.splitext(os.path.basename(p))[0] + " (copia con errori).ini")
+            with open(dest, "w", encoding="utf-8-sig") as f:
+                f.write(text)
+        except OSError:
+            pass
+        return lib
+    if shared:
+        try:
+            with open(cache_path(), "w", encoding="utf-8-sig") as f:
+                f.write(text)
+        except OSError:
+            pass
+    if _fix_obsbot(lib):
+        try:
+            save_library(lib)
+        except (OSError, LibraryError):
+            pass
     return lib
 
 
 def save_library(lib: List[Device]) -> None:
+    """Scrive tutto il catalogo nel file (per le modifiche puntuali usare modify_library)."""
     global _known_mtime
+    if library_offline:
+        raise LibraryError("Il catalogo condiviso non è raggiungibile: modifica non salvata.")
     p = library_path()
-    with open(p, "w", encoding="utf-8-sig", newline="\r\n") as f:
-        f.write(library_to_text(lib))
+    _write(p, lib)
     _known_mtime = os.path.getmtime(p)
+    if is_shared():
+        try:
+            _write(cache_path(), lib)
+        except OSError:
+            pass
+
+
+def modify_library(change) -> List[Device]:
+    """Rilegge il catalogo dal file, applica change(lib) e lo riscrive subito: così le modifiche
+    fatte nel frattempo da altri (programma o Blocco note) non vanno perse. Restituisce il catalogo."""
+    if library_offline:
+        raise LibraryError("Il catalogo condiviso non è raggiungibile: modifica non salvata.\n"
+                           "Controlla la connessione alla cartella condivisa e riprova.")
+    p = library_path()
+    if os.path.exists(p):
+        try:
+            lib, errors = library_from_text(_read_text(p))
+        except OSError as e:
+            raise LibraryError(f"Impossibile leggere il catalogo {p}: {e}")
+        if errors:
+            raise LibraryError("Il file del catalogo contiene errori: correggilo prima di salvare "
+                               "(scheda Catalogo dispositivi → Apri con Blocco note).\n\n"
+                               + "\n".join("• " + e for e in errors))
+    else:
+        lib = _load_local_or_default()
+    change(lib)
+    save_library(lib)
+    return lib
+
+
+def merge_devices(lib: List[Device], extra: List[Device]) -> List[str]:
+    """Aggiunge a lib i dispositivi di extra che non ci sono (per nome). Restituisce i nomi aggiunti."""
+    added = []
+    for d in extra:
+        if not find_device(lib, d.name):
+            lib.append(Device(**asdict(d)))
+            added.append(d.name)
+    return added
 
 
 def find_device(lib: List[Device], name: str) -> Optional[Device]:
